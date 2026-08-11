@@ -1,0 +1,10 @@
+#!/bin/sh
+# Managed by Ansible — roles/monitoring
+# get_throttled bits 16-19 are sticky since last boot, not current state.
+# 0xe0000 means "this happened at some point", not "throttling right now".
+# Only a reboot clears them.
+printf '%s temp=%s %s load=%s\n' \
+  "$(date -Is)" \
+  "$(vcgencmd measure_temp | cut -d= -f2)" \
+  "$(vcgencmd get_throttled)" \
+  "$(cut -d' ' -f1-3 /proc/loadavg)" >> {{ thermal_log }}

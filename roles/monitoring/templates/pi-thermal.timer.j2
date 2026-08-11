@@ -1,0 +1,11 @@
+# Managed by Ansible — roles/monitoring
+[Unit]
+Description=Hourly Pi thermal log
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ thermal_interval }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

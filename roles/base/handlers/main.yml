@@ -1,0 +1,4 @@
+---
+- name: Reboot required
+  ansible.builtin.debug:
+    msg: "config.txt changed — reboot required for radio changes to take effect"

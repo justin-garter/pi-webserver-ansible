@@ -1,0 +1,52 @@
+---
+# Debian 13 ships fail2ban 1.1.x, so the Python 3.12 asynchat breakage that
+# forced a manual .deb on Ubuntu 24.04 does not apply here.
+- name: Install fail2ban
+  ansible.builtin.apt:
+    name:
+      - fail2ban
+      - python3-systemd   # sshd jail reads the systemd journal
+    state: present
+
+- name: Deploy caddy-404 filter
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/filter.d/caddy-404.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible — roles/fail2ban
+      [Definition]
+      failregex = ^.*"client_ip":"<HOST>".*"status":404.*$
+      ignoreregex =
+  notify: Restart fail2ban
+
+# Minimal overrides only. jail.conf supplies the defaults; never edit it
+# directly, package updates overwrite it.
+- name: Deploy jail.local
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+
+- name: Enable fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+
+- name: List active jails
+  ansible.builtin.command: fail2ban-client status
+  register: f2b_status
+  check_mode: false
+  changed_when: false
+
+- name: Assert both jails loaded
+  ansible.builtin.assert:
+    that:
+      - "'sshd' in f2b_status.stdout"
+      - "'caddy-404' in f2b_status.stdout"
+    fail_msg: "Expected jails not loaded: {{ f2b_status.stdout }}"

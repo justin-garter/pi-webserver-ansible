@@ -1,0 +1,31 @@
+---
+- name: Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+
+# WireGuard must exist before this runs, or the SSH rule references an
+# interface that isn't there and you lock yourself out of a host with no
+# LAN-side fallback. Role order in site.yml enforces this.
+- name: Verify the management interface exists before restricting SSH to it
+  ansible.builtin.assert:
+    that: nft_ssh_interface_only in ansible_facts['interfaces']
+    fail_msg: >-
+      {{ nft_ssh_interface_only }} is not present. Applying this ruleset would
+      make SSH unreachable. Bring WireGuard up first.
+
+- name: Deploy ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload nftables
+
+- name: Enable nftables
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started

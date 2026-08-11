@@ -1,0 +1,41 @@
+---
+# /etc/ssh/sshd_config has `Include /etc/ssh/sshd_config.d/*.conf` near the TOP,
+# and sshd takes the FIRST value it obtains for most keywords, not the last.
+# Drop-ins are read in lexical order, so a 00- file beats cloud-init's 50- file
+# and anything written further down the main config is dead text.
+#
+# This exact mechanism left PasswordAuthentication enabled on the predecessor
+# host for months while its documentation claimed key-only auth.
+- name: Deploy authoritative sshd drop-in
+  ansible.builtin.template:
+    src: 00-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart sshd
+
+- name: Enable sshd
+  ansible.builtin.systemd:
+    name: ssh
+    enabled: true
+    state: started
+
+- name: Read effective sshd config
+  ansible.builtin.command: sshd -T
+  register: sshd_effective
+  check_mode: false
+  changed_when: false
+
+# Verify behaviour, not the file. The file is intent; -T output is reality.
+- name: Assert hardening is actually in force
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in sshd_effective.stdout"
+      - "'kbdinteractiveauthentication no' in sshd_effective.stdout"
+      - "'permitrootlogin no' in sshd_effective.stdout"
+      - "'port ' ~ ssh_port in sshd_effective.stdout"
+    fail_msg: >-
+      Effective sshd config does not match intent. Another drop-in is winning —
+      check lexical ordering in /etc/ssh/sshd_config.d/

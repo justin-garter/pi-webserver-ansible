@@ -1,0 +1,11 @@
+# Managed by Ansible — roles/ddns
+[Unit]
+Description=Run Cloudflare DDNS updater periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec={{ ddns_interval }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

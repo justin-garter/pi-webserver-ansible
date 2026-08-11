@@ -1,0 +1,32 @@
+---
+- name: JG-RPi-WebServer — DMZ static web server
+  hosts: webserver
+  gather_facts: true
+
+  pre_tasks:
+    - name: Refuse to run against anything but Raspberry Pi OS / Debian
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Debian'
+          - ansible_facts['architecture'] == 'aarch64'
+        fail_msg: >-
+          This playbook targets Raspberry Pi OS (Debian) on arm64.
+          Found {{ ansible_facts['distribution'] }} on {{ ansible_facts['architecture'] }}.
+
+  roles:
+    - role: base
+      tags: [base]
+    - role: ssh
+      tags: [ssh]
+    - role: wireguard          # before nftables: the firewall depends on wg0 existing
+      tags: [wireguard]
+    - role: nftables
+      tags: [nftables, firewall]
+    - role: caddy
+      tags: [caddy, web]
+    - role: fail2ban
+      tags: [fail2ban, security]
+    - role: ddns
+      tags: [ddns, dns]
+    - role: monitoring
+      tags: [monitoring]

@@ -1,0 +1,6 @@
+# Managed by Ansible — roles/ssh
+# Sorts before 50-cloud-init.conf. sshd uses first-obtained-value.
+Port {{ ssh_port }}
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no

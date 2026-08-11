@@ -1,0 +1,15 @@
+---
+# Copy to vault.yml and encrypt:
+#   cp vault.yml.example vault.yml
+#   # fill in real values
+#   ansible-vault encrypt vault.yml
+#
+# Never commit an unencrypted vault.yml. Check before pushing:
+#   head -1 group_vars/webserver/vault.yml   # must read $ANSIBLE_VAULT;1.1;AES256
+
+# Cloudflare API token, scoped Zone -> DNS -> Edit on justingarter.com only
+ddns_api_token: "REPLACE_ME"
+
+# WireGuard server private key (base64). Public key derived from it must match
+# what the client config lists as its peer, or the tunnel silently fails.
+wg_private_key: "REPLACE_ME"

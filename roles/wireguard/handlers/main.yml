@@ -1,0 +1,5 @@
+---
+- name: Sync WireGuard config
+  ansible.builtin.shell:
+    cmd: "wg syncconf {{ wg_interface }} <(wg-quick strip {{ wg_interface }})"
+    executable: /bin/bash

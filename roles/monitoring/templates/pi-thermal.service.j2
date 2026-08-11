@@ -1,0 +1,7 @@
+# Managed by Ansible — roles/monitoring
+[Unit]
+Description=Log Pi thermal and throttle state
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pi-thermal.sh

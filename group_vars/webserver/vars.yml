@@ -1,0 +1,110 @@
+---
+# ── Host identity ────────────────────────────────────────────────────────────
+host_name: JG-RPi-WebServer
+host_timezone: America/New_York
+
+# ── Network ──────────────────────────────────────────────────────────────────
+dmz_interface: eth0
+dmz_address: 192.168.54.180
+dmz_prefix: 24
+dmz_gateway: 192.168.54.1
+dmz_dns:
+  - 1.1.1.1
+  - 9.9.9.9
+
+# ── SSH ──────────────────────────────────────────────────────────────────────
+ssh_port: 2222
+
+# ── WireGuard ────────────────────────────────────────────────────────────────
+wg_interface: wg0
+wg_address: 10.10.10.1/24
+wg_listen_port: 51820
+wg_peers:
+  - name: windows-workstation
+    public_key: FcweuF3EZQAaMuGvjgHlRvCOC2qkDqiJizjrCNU680M=
+    allowed_ips: 10.10.10.2/32
+# wg_private_key lives in vault.yml
+
+# ── Firewall ─────────────────────────────────────────────────────────────────
+# SSH is reachable only over the WireGuard interface. There is no LAN-side
+# fallback — the DMZ VLAN blocks traffic from the trusted LAN in both
+# directions. If the tunnel breaks, recovery is HDMI and a keyboard.
+nft_ssh_interface_only: "{{ wg_interface }}"
+nft_public_tcp_ports: [80, 443]
+nft_public_udp_ports: "{{ [wg_listen_port] }}"
+# HTTP/3 (udp 443) intentionally absent: not forwarded at the router, and
+# Cloudflare reaches origin over TCP. Caddy is told not to advertise it.
+
+# ── Caddy ────────────────────────────────────────────────────────────────────
+caddy_site_domains:
+  - justingarter.com
+  - www.justingarter.com
+caddy_web_root: /var/www/portfolio
+caddy_web_root_owner: justin
+caddy_web_root_group: justin
+caddy_log_path: /var/log/caddy/access.log
+caddy_gomemlimit: 256MiB
+caddy_memory_max: 384M
+caddy_protocols: h1 h2
+
+# Cloudflare origin-facing ranges. Static snapshot — see roles/caddy/README.
+# Refresh from https://www.cloudflare.com/ips-v4
+# IPv6 ranges are deliberately omitted: the origin publishes no AAAA record,
+# so Cloudflare connects over IPv4. Add them before ever publishing one.
+caddy_trusted_proxies:
+  - 173.245.48.0/20
+  - 103.21.244.0/22
+  - 103.22.200.0/22
+  - 103.31.4.0/22
+  - 141.101.64.0/18
+  - 108.162.192.0/18
+  - 190.93.240.0/20
+  - 188.114.96.0/20
+  - 197.234.240.0/22
+  - 198.41.128.0/17
+  - 162.158.0.0/15
+  - 104.16.0.0/13
+  - 104.24.0.0/14
+  - 172.64.0.0/13
+  - 131.0.72.0/22
+
+caddy_security_headers:
+  Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+  X-Content-Type-Options: "nosniff"
+  X-Frame-Options: "DENY"
+  Referrer-Policy: "strict-origin-when-cross-origin"
+  Permissions-Policy: "geolocation=(), microphone=(), camera=()"
+
+# ── fail2ban ─────────────────────────────────────────────────────────────────
+# nftables, not iptables: this host has no iptables binary. A jail configured
+# with iptables-multiport looks healthy and bans nothing.
+f2b_banaction: "nftables[type=multiport]"
+f2b_banaction_allports: "nftables[type=allports]"
+f2b_ignoreip: "127.0.0.1/8 ::1 10.10.10.0/24"
+f2b_caddy404_maxretry: 10
+f2b_caddy404_findtime: 120
+f2b_caddy404_bantime: 3600
+
+# ── DDNS ─────────────────────────────────────────────────────────────────────
+ddns_zone_id: 63de65311b9a3ed27665b03d0dd88ed8
+ddns_records:
+  - justingarter.com
+  - vpn.justingarter.com
+ddns_interval: 5min
+# ddns_api_token lives in vault.yml
+
+# ── Swap ─────────────────────────────────────────────────────────────────────
+# zram (priority 100) fills first; this NVMe file is the backstop.
+# Do NOT touch /var/swap — that is zram's writeback store, managed by
+# rpi-setup-loop@var-swap.service, not a stale swapfile.
+swapfile_path: /swapfile
+swapfile_size_mb: 2048
+swapfile_priority: -10
+
+# ── Packages ─────────────────────────────────────────────────────────────────
+base_packages: [curl, jq, rsync, ethtool, nftables, gnupg, ca-certificates]
+base_packages_absent: [avahi-daemon]
+
+# ── Thermal monitoring ───────────────────────────────────────────────────────
+thermal_log: /var/log/pi-thermal.log
+thermal_interval: 1h

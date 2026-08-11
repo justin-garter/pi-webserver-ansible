@@ -1,0 +1,14 @@
+# Managed by Ansible — roles/wireguard
+# This tunnel is the ONLY management path into the DMZ. The trusted LAN cannot
+# reach this segment in either direction. If it breaks: HDMI and a keyboard.
+[Interface]
+Address = {{ wg_address }}
+ListenPort = {{ wg_listen_port }}
+PrivateKey = {{ wg_private_key }}
+{% for peer in wg_peers %}
+
+# {{ peer.name }}
+[Peer]
+PublicKey = {{ peer.public_key }}
+AllowedIPs = {{ peer.allowed_ips }}
+{% endfor %}

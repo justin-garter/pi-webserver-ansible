@@ -1,0 +1,116 @@
+---
+- name: Ensure apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Add Cloudsmith signing key
+  ansible.builtin.get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    dest: /etc/apt/keyrings/caddy-stable.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+# Own the whole file rather than use apt_repository, which APPENDS to an
+# existing one. A hand-built install leaves Cloudsmith's .list referencing
+# /usr/share/keyrings/..., and apt refuses to read ANY sources when a repo is
+# declared twice with different signed-by values — which breaks every apt task
+# on the host, not just Caddy's.
+- name: Deploy Caddy repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/caddy-stable.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible — roles/caddy
+      deb [signed-by=/etc/apt/keyrings/caddy-stable.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
+  register: caddy_repo
+
+- name: Remove keyring left by a hand-built install
+  ansible.builtin.file:
+    path: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    state: absent
+
+- name: Refresh apt cache after repository change
+  ansible.builtin.apt:
+    update_cache: true
+  when: caddy_repo.changed
+
+# Debian ships an older Caddy. Note this repo is pinned out of
+# unattended-upgrades, so Caddy CVEs are a manual responsibility.
+- name: Install Caddy
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+    update_cache: true
+
+- name: Ensure log directory
+  ansible.builtin.file:
+    path: "{{ caddy_log_path | dirname }}"
+    state: directory
+    owner: caddy
+    group: caddy
+    mode: "0750"
+
+# Owned by the deploy user, not caddy: content is pushed with rsync over SSH
+# and Caddy only ever reads it. Chowning to caddy would break deploys.
+- name: Ensure web root
+  ansible.builtin.file:
+    path: "{{ caddy_web_root }}"
+    state: directory
+    owner: "{{ caddy_web_root_owner }}"
+    group: "{{ caddy_web_root_group }}"
+    mode: "0755"
+
+- name: Deploy Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/bin/caddy validate --adapter caddyfile --config %s
+  notify: Reload caddy
+
+# `caddy validate` runs as root and sets up the log writer as a side effect,
+# creating access.log owned root:root 0600. Caddy then starts as the caddy
+# user, cannot open its own log, and fails with a misleading permission error.
+# This task cleans up after the validate step above.
+- name: Repair log ownership after validate
+  ansible.builtin.file:
+    path: "{{ caddy_log_path }}"
+    state: touch
+    owner: caddy
+    group: caddy
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Create systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/caddy.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy systemd override
+  ansible.builtin.template:
+    src: override.conf.j2
+    dest: /etc/systemd/system/caddy.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart caddy
+
+- name: Enable Caddy
+  ansible.builtin.systemd:
+    name: caddy
+    enabled: true
+    state: started
+    daemon_reload: true

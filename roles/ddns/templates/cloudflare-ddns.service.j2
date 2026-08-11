@@ -1,0 +1,9 @@
+# Managed by Ansible — roles/ddns
+[Unit]
+Description=Cloudflare DDNS updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cloudflare-ddns.sh

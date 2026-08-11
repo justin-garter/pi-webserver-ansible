@@ -1,0 +1,12 @@
+# Managed by Ansible — roles/caddy
+[Service]
+LogsDirectory={{ caddy_log_path | dirname | basename }}
+LogsDirectoryMode=0750
+ReadWritePaths={{ caddy_log_path | dirname }}
+
+# Soft GC target. Caddy otherwise infers ~890MB from total RAM, which is most
+# of a 1GB board.
+Environment="GOMEMLIMIT={{ caddy_gomemlimit }}"
+
+# Hard cgroup ceiling: kill Caddy rather than let it drag the host into swap.
+MemoryMax={{ caddy_memory_max }}

@@ -1,0 +1,33 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible — roles/nftables
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
+        # ICMPv6 enumerated rather than blanket-accepted: NDP needs specific
+        # types and nothing else has to get through.
+        ip6 nexthdr icmpv6 icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, packet-too-big, destination-unreachable, time-exceeded } accept
+
+        tcp dport { {{ nft_public_tcp_ports | join(', ') }} } accept
+{% for port in nft_public_udp_ports %}
+        udp dport {{ port }} accept comment "wireguard"
+{% endfor %}
+
+        # HTTP/3 (udp 443) deliberately absent: not forwarded at the router,
+        # and Cloudflare reaches origin over TCP. Caddy is configured not to
+        # advertise h3 so clients don't attempt QUIC and fall back.
+
+        iifname "{{ nft_ssh_interface_only }}" tcp dport {{ ssh_port }} accept comment "ssh — wireguard only"
+
+        counter comment "dropped"
+    }
+    chain forward { type filter hook forward priority 0; policy drop; }
+    chain output  { type filter hook output  priority 0; policy accept; }
+}

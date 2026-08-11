@@ -1,0 +1,49 @@
+---
+- name: Ensure jq is present
+  ansible.builtin.apt:
+    name: jq
+    state: present
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: /etc/cloudflare-ddns
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Deploy DDNS config
+  ansible.builtin.template:
+    src: config.j2
+    dest: /etc/cloudflare-ddns/config
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true          # renders ddns_api_token; --diff would print it
+
+- name: Deploy DDNS script
+  ansible.builtin.copy:
+    src: cloudflare-ddns.sh
+    dest: /usr/local/bin/cloudflare-ddns.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Deploy DDNS units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - cloudflare-ddns.service
+    - cloudflare-ddns.timer
+  notify: Reload systemd
+
+- name: Enable DDNS timer
+  ansible.builtin.systemd:
+    name: cloudflare-ddns.timer
+    enabled: true
+    state: started
+    daemon_reload: true

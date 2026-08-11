@@ -1,0 +1,27 @@
+# Managed by Ansible — roles/fail2ban
+[DEFAULT]
+# This host has no iptables binary. A jail left on iptables-multiport looks
+# perfectly healthy and bans nothing at all.
+banaction          = {{ f2b_banaction }}
+banaction_allports = {{ f2b_banaction_allports }}
+
+# The WireGuard subnet is the only management path in. A self-ban there is a
+# physical trip to the basement.
+ignoreip = {{ f2b_ignoreip }}
+
+[sshd]
+enabled  = true
+port     = {{ ssh_port }}
+backend  = systemd
+
+# Catches automated scanning — bots probing /wp-admin and friends.
+# Worthless unless Caddy's trusted_proxies is correct: if client_ip logs a
+# Cloudflare edge address, this bans Cloudflare.
+[caddy-404]
+enabled  = true
+port     = http,https
+filter   = caddy-404
+logpath  = {{ caddy_log_path }}
+maxretry = {{ f2b_caddy404_maxretry }}
+findtime = {{ f2b_caddy404_findtime }}
+bantime  = {{ f2b_caddy404_bantime }}

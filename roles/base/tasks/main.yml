@@ -1,0 +1,149 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ host_name }}"
+
+- name: Pin hostname in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: "127.0.1.1\t{{ host_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ host_timezone }}"
+
+# cloud-init applies Imager's first-boot customisation, then keeps rewriting
+# /etc/hosts and hostname on every boot. Left enabled it contends with this
+# playbook over the same files.
+- name: Disable cloud-init
+  ansible.builtin.file:
+    path: /etc/cloud/cloud-init.disabled
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+
+# These hold the account password hash and WiFi PSK in cleartext on a FAT
+# partition, where the reported -rwxr-xr-x root root is invented at mount
+# time and enforces nothing.
+- name: Remove cloud-init seed files containing cleartext credentials
+  ansible.builtin.file:
+    path: "/boot/firmware/{{ item }}"
+    state: absent
+  loop:
+    - user-data
+    - network-config
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Remove unneeded packages
+  ansible.builtin.apt:
+    name: "{{ base_packages_absent }}"
+    state: absent
+    purge: true
+    autoremove: true
+
+# Single-homed on the DMZ. A dual-homed host bridges the two networks
+# regardless of any firewall rule.
+- name: Disable onboard radios at the firmware layer
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/config.txt
+    line: "dtoverlay={{ item }}"
+    state: present
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - disable-wifi
+    - disable-bt
+  notify: Reboot required
+
+- name: Remove stored WiFi connection profiles
+  ansible.builtin.find:
+    paths: /etc/netplan
+    patterns: "*NM*.yaml"
+    contains: "wifis:"
+  register: wifi_profiles
+
+- name: Report stored WiFi profiles for manual removal
+  ansible.builtin.debug:
+    msg: >-
+      WiFi credentials still present in {{ wifi_profiles.files | map(attribute='path') | list }}.
+      Remove with: nmcli connection delete <name>
+  when: wifi_profiles.files | length > 0
+
+- name: Create NVMe swapfile
+  ansible.builtin.command:
+    cmd: "fallocate -l {{ swapfile_size_mb }}M {{ swapfile_path }}"
+    creates: "{{ swapfile_path }}"
+
+- name: Secure swapfile
+  ansible.builtin.file:
+    path: "{{ swapfile_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check whether swapfile is formatted
+  ansible.builtin.command: "file -b {{ swapfile_path }}"
+  register: swapfile_type
+  check_mode: false
+  changed_when: false
+
+- name: Format swapfile
+  ansible.builtin.command: "mkswap {{ swapfile_path }}"
+  when: "'swap file' not in swapfile_type.stdout"
+
+# Priority below zram's 100 so compressed RAM fills first and the NVMe is
+# only touched under real pressure.
+- name: Register swapfile in fstab
+  ansible.posix.mount:
+    path: none
+    src: "{{ swapfile_path }}"
+    fstype: swap
+    opts: "sw,pri={{ swapfile_priority }}"
+    state: present
+
+- name: Activate swap
+  ansible.builtin.command: swapon -a
+  changed_when: false
+
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+# A separate 52- file rather than editing the shipped 50- config: package
+# upgrades can replace 50unattended-upgrades, and a higher number wins.
+- name: Configure unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+
+- name: Enable periodic apt runs
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";

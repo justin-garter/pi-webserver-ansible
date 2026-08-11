@@ -1,0 +1,43 @@
+---
+- name: Install WireGuard
+  ansible.builtin.apt:
+    name: wireguard
+    state: present
+
+- name: Create /etc/wireguard
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Deploy wg0 config
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "/etc/wireguard/{{ wg_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true          # renders wg_private_key; --diff would print it
+  notify: Sync WireGuard config
+
+- name: Enable WireGuard
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}"
+    enabled: true
+    state: started
+
+- name: Confirm the interface is up
+  ansible.builtin.command: "wg show {{ wg_interface }}"
+  register: wg_state
+  check_mode: false
+  changed_when: false
+
+- name: Assert the expected peer is configured
+  ansible.builtin.assert:
+    that: item.public_key in wg_state.stdout
+    fail_msg: "Peer {{ item.name }} missing from {{ wg_interface }}"
+  loop: "{{ wg_peers }}"
+  loop_control:
+    label: "{{ item.name }}"
