@@ -111,6 +111,22 @@ The WireGuard handler uses `wg syncconf` rather than `wg-quick down/up` for the 
 
 ---
 
+## Routed access through the tunnel
+
+This host terminates the WireGuard tunnel and also routes **one** narrowly-scoped flow to another DMZ host (`minecraftserver`, `192.168.54.10:22`), rather than standing up a second VPN endpoint or forwarding another WAN port. Peers already carry `AllowedIPs` covering the whole DMZ `/24`, so no peer config changes were needed.
+
+Driven entirely by `nft_forward_allow` in `group_vars`. An empty list means no routing and sets `net.ipv4.ip_forward` back to `0` — the sysctl and the firewall rules read the same variable so they cannot disagree.
+
+Three deliberate choices:
+
+- **The forward rules live in the existing base chain.** nftables traverses *every* base chain on a hook, so a second chain would still be filtered by the original's `policy drop` — presenting as intermittent failure rather than an obvious error.
+- **Tunnel → trusted LAN is explicitly dropped** before any accept can match. The router's VLAN already blocks it; stating it here makes the intent auditable on the one host that could otherwise become a pivot.
+- **No masquerade or SNAT.** The destination sees the real `10.10.10.x` source, so its logs attribute connections to a specific peer instead of blaming this host for everything.
+
+The template replaces only `inet filter` rather than issuing `flush ruleset`, because fail2ban maintains its own `inet f2b-table` and a full flush would silently delete active bans while fail2ban continued to report them as enforced.
+
+---
+
 ## Known gaps
 
 - `caddy_trusted_proxies` is a static snapshot of Cloudflare's ranges. They change. Refresh from `https://www.cloudflare.com/ips-v4`; a scheduled refresh is not yet automated.

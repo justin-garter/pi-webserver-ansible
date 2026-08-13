@@ -1,6 +1,15 @@
 #!/usr/sbin/nft -f
 # Managed by Ansible — roles/nftables
-flush ruleset
+
+# Replace only this table, never `flush ruleset`. fail2ban maintains its own
+# `inet f2b-table` at a higher priority; flushing everything would delete its
+# active bans out from under it, and fail2ban would keep reporting them as
+# banned while the kernel no longer enforced anything.
+#
+# The bare declaration creates the table if it does not exist, so the delete
+# that follows cannot fail on a fresh host.
+table inet filter
+delete table inet filter
 
 table inet filter {
     chain input {
@@ -28,6 +37,27 @@ table inet filter {
 
         counter comment "dropped"
     }
-    chain forward { type filter hook forward priority 0; policy drop; }
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+{% if nft_forward_allow | length > 0 %}
+
+        ct state established,related accept
+
+        # Deny tunnel -> trusted LAN before any accept below can match it. The
+        # DMZ VLAN already blocks this at the router; stating it here makes the
+        # intent explicit and auditable on the one host that could otherwise
+        # become a pivot into the LAN.
+        iifname "{{ wg_interface }}" ip daddr {{ lan_subnet }} drop comment "VPN must never reach the LAN"
+
+        # No NAT or masquerade, deliberately: the destination host sees the real
+        # 10.10.10.x source, so its logs attribute connections to a specific
+        # peer instead of blaming this host for everything.
+{% for f in nft_forward_allow %}
+        iifname "{{ wg_interface }}" oifname "{{ dmz_interface }}" ip saddr {{ wg_subnet }} ip daddr {{ f.dest }} tcp dport {{ f.port }} ct state new accept comment "{{ f.name }}"
+{% endfor %}
+
+        counter comment "forward dropped"
+{% endif %}
+    }
     chain output  { type filter hook output  priority 0; policy accept; }
 }

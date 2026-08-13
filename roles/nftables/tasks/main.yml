@@ -14,6 +14,18 @@
       {{ nft_ssh_interface_only }} is not present. Applying this ruleset would
       make SSH unreachable. Bring WireGuard up first.
 
+# A host that terminates a tunnel does not route by default, and should not
+# unless something actually needs it. Driven off the same variable as the
+# forward rules so the two can never disagree.
+- name: Set IPv4 forwarding to match the configured routed flows
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "{{ '1' if nft_forward_allow | length > 0 else '0' }}"
+    sysctl_file: /etc/sysctl.d/99-wg-forward.conf
+    sysctl_set: true
+    reload: true
+    state: present
+
 - name: Deploy ruleset
   ansible.builtin.template:
     src: nftables.conf.j2
@@ -29,3 +41,17 @@
     name: nftables
     enabled: true
     state: started
+
+- name: Read effective forwarding state
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: ip_forward_state
+  check_mode: false
+  changed_when: false
+
+- name: Assert forwarding matches intent
+  ansible.builtin.assert:
+    that: >-
+      ip_forward_state.stdout | trim == ('1' if nft_forward_allow | length > 0 else '0')
+    fail_msg: >-
+      net.ipv4.ip_forward is {{ ip_forward_state.stdout | trim }}, which does not
+      match the {{ nft_forward_allow | length }} configured forward rule(s).

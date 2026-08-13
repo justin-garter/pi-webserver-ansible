@@ -35,6 +35,20 @@ nft_public_udp_ports: "{{ [wg_listen_port] }}"
 # HTTP/3 (udp 443) intentionally absent: not forwarded at the router, and
 # Cloudflare reaches origin over TCP. Caddy is told not to advertise it.
 
+# ── Routed access through the tunnel ─────────────────────────────────────────
+# This host terminates the WireGuard tunnel and also routes one narrowly-scoped
+# flow to another DMZ host, rather than standing up a second VPN endpoint or
+# forwarding another WAN port. Peers already carry AllowedIPs for the whole
+# DMZ /24, so no peer config changes are needed.
+#
+# An empty list means no routing at all, and ip_forward is set back to 0.
+wg_subnet: 10.10.10.0/24
+lan_subnet: 192.168.50.0/24
+nft_forward_allow:
+  - name: "VPN admin -> minecraftserver SSH"
+    dest: 192.168.54.10
+    port: 22
+
 # ── Caddy ────────────────────────────────────────────────────────────────────
 caddy_site_domains:
   - justingarter.com
