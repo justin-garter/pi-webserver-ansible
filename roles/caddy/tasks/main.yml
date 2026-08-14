@@ -11,6 +11,7 @@
   ansible.builtin.get_url:
     url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
     dest: /etc/apt/keyrings/caddy-stable.asc
+    checksum: "sha256:783dfee04b19e851a928cd87b34710213ebbe7628f98d9f34595ab83be578c00"
     owner: root
     group: root
     mode: "0644"
