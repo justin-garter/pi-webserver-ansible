@@ -119,6 +119,14 @@ swapfile_priority: -10
 base_packages: [curl, jq, rsync, ethtool, nftables, gnupg, ca-certificates]
 base_packages_absent: [avahi-daemon]
 
+# Tooling this host needs to verify its own claims. wrk produces the load-test
+# figures published on the portfolio, and it has to run here rather than on a
+# workstation because the published methodology has the generator sharing the
+# same four cores as Caddy. nmap and dnsutils are deliberately excluded: both
+# are workstation tools, and scanning from inside the DMZ tests the wrong
+# direction anyway.
+verification_packages: [wrk]
+
 # ── Thermal monitoring ───────────────────────────────────────────────────────
 thermal_log: /var/log/pi-thermal.log
 thermal_interval: 1h
