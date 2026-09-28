@@ -9,7 +9,3 @@
 
 # Cloudflare API token, scoped Zone -> DNS -> Edit on justingarter.com only
 ddns_api_token: "REPLACE_ME"
-
-# WireGuard server private key (base64). Public key derived from it must match
-# what the client config lists as its peer, or the tunnel silently fails.
-wg_private_key: "REPLACE_ME"

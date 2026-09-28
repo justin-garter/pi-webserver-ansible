@@ -4,50 +4,30 @@ host_name: JG-RPi-WebServer
 host_timezone: America/New_York
 
 # ── Network ──────────────────────────────────────────────────────────────────
+# VLAN 40 behind OPNsense (DR-002, DR-003). The DMZ has no DHCP by design, so
+# the address is pinned in netplan by roles/base rather than leased.
 dmz_interface: eth0
-dmz_address: 192.168.54.180
+dmz_address: 10.10.40.10
 dmz_prefix: 24
-dmz_gateway: 192.168.54.1
+dmz_gateway: 10.10.40.1
 dmz_dns:
-  - 1.1.1.1
-  - 9.9.9.9
+  - 10.10.40.1
 
 # ── SSH ──────────────────────────────────────────────────────────────────────
 ssh_port: 2222
 
-# ── WireGuard ────────────────────────────────────────────────────────────────
-wg_interface: wg0
-wg_address: 10.10.10.1/24
-wg_listen_port: 51820
-wg_peers:
-  - name: windows-workstation
-    public_key: FcweuF3EZQAaMuGvjgHlRvCOC2qkDqiJizjrCNU680M=
-    allowed_ips: 10.10.10.2/32
-# wg_private_key lives in vault.yml
-
 # ── Firewall ─────────────────────────────────────────────────────────────────
-# SSH is reachable only over the WireGuard interface. There is no LAN-side
-# fallback — the DMZ VLAN blocks traffic from the trusted LAN in both
-# directions. If the tunnel breaks, recovery is HDMI and a keyboard.
-nft_ssh_interface_only: "{{ wg_interface }}"
+# SSH is admitted by source address, not interface (DR-003 4.2, amended
+# 2026-09-29): VLAN 10 (Mgmt) plus the admin desktop, which sits on VLAN 20
+# (Main) and is pinned to 10.10.20.10 by an OPNsense static mapping. OPNsense
+# enforces the same scope upstream; this is the host-level half. If both paths
+# fail, recovery is the console login in DR-003 section 6.
+ssh_admin_sources:
+  - 10.10.10.0/24
+  - 10.10.20.10/32
 nft_public_tcp_ports: [80, 443]
-nft_public_udp_ports: "{{ [wg_listen_port] }}"
 # HTTP/3 (udp 443) intentionally absent: not forwarded at the router, and
 # Cloudflare reaches origin over TCP. Caddy is told not to advertise it.
-
-# ── Routed access through the tunnel ─────────────────────────────────────────
-# This host terminates the WireGuard tunnel and also routes one narrowly-scoped
-# flow to another DMZ host, rather than standing up a second VPN endpoint or
-# forwarding another WAN port. Peers already carry AllowedIPs for the whole
-# DMZ /24, so no peer config changes are needed.
-#
-# An empty list means no routing at all, and ip_forward is set back to 0.
-wg_subnet: 10.10.10.0/24
-lan_subnet: 192.168.50.0/24
-nft_forward_allow:
-  - name: "VPN admin -> minecraftserver SSH"
-    dest: 192.168.54.10
-    port: 22
 
 # ── Caddy ────────────────────────────────────────────────────────────────────
 caddy_site_domains:
@@ -94,26 +74,38 @@ caddy_security_headers:
 # with iptables-multiport looks healthy and bans nothing.
 f2b_banaction: "nftables[type=multiport]"
 f2b_banaction_allports: "nftables[type=allports]"
-f2b_ignoreip: "127.0.0.1/8 ::1 10.10.10.0/24"
+f2b_ignoreip: "127.0.0.1/8 ::1 {{ ssh_admin_sources | join(' ') }}"
 f2b_caddy404_maxretry: 10
 f2b_caddy404_findtime: 120
 f2b_caddy404_bantime: 3600
 
 # ── DDNS ─────────────────────────────────────────────────────────────────────
 ddns_zone_id: 63de65311b9a3ed27665b03d0dd88ed8
+# origin is DNS-only (unproxied) so Minecraft can CNAME to it; the apex is
+# proxied. Both must already exist in Cloudflare: the updater edits records,
+# it never creates them.
 ddns_records:
   - justingarter.com
-  - vpn.justingarter.com
+  - origin.justingarter.com
 ddns_interval: 5min
 # ddns_api_token lives in vault.yml
 
 # ── Swap ─────────────────────────────────────────────────────────────────────
-# zram (priority 100) fills first; this NVMe file is the backstop.
+# zram (priority 100) fills first; this file on the microSD is a small
+# backstop only. Kept small because every swap write is card wear (DR-003 7).
 # Do NOT touch /var/swap — that is zram's writeback store, managed by
 # rpi-setup-loop@var-swap.service, not a stale swapfile.
 swapfile_path: /swapfile
-swapfile_size_mb: 2048
+swapfile_size_mb: 512
 swapfile_priority: -10
+
+# ── microSD wear (DR-003 7) ──────────────────────────────────────────────────
+# noatime drops a write per read; commit=600 batches ext4 journal flushes to
+# every 10 minutes, so Caddy's access log and fail2ban coalesce into few large
+# writes. A hard power loss drops up to 10 minutes of data (R14 accepts an
+# hour). journald keeps everything in RAM.
+root_mount_opts: defaults,noatime,commit=600
+journald_runtime_max: 32M
 
 # ── Packages ─────────────────────────────────────────────────────────────────
 base_packages: [curl, jq, rsync, ethtool, nftables, gnupg, ca-certificates]

@@ -1,4 +1,21 @@
 ---
+# R13: a host whose only way in is the network is unrecoverable when the
+# network is what broke. The account must be able to log in at a console with
+# a password (set in Imager, kept in the password manager). SSH stays key-only.
+- name: Read console account password status
+  ansible.builtin.command: "passwd -S {{ ansible_user }}"
+  register: console_pw
+  check_mode: false
+  changed_when: false
+
+- name: Refuse to continue without a console break-glass password
+  ansible.builtin.assert:
+    that: console_pw.stdout.split()[1] == 'P'
+    fail_msg: >-
+      {{ ansible_user }} has no usable password (status {{ console_pw.stdout.split()[1] }}).
+      Set one at the console with `sudo passwd {{ ansible_user }}` and store it in
+      the password manager before this host goes behind its firewall.
+
 - name: Set hostname
   ansible.builtin.hostname:
     name: "{{ host_name }}"
@@ -39,6 +56,32 @@
   loop:
     - user-data
     - network-config
+
+# Only move the address if the host is already on it. A mismatch here means
+# the bootstrap went wrong; applying netplan would strand the host mid-run.
+- name: Confirm the host is already on its DMZ address
+  ansible.builtin.assert:
+    that: dmz_address in (ansible_facts[dmz_interface]['ipv4']['address'] | default(''))
+    fail_msg: >-
+      {{ dmz_interface }} is not on {{ dmz_address }}. Fix the bootstrap address
+      before letting this role pin it.
+
+- name: Pin the DMZ address in netplan
+  ansible.builtin.template:
+    src: 90-dmz.yaml.j2
+    dest: /etc/netplan/90-dmz.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Apply netplan
+
+# cloud-init rendered the bootstrap address here. With cloud-init disabled it
+# never changes again, but two files describing eth0 invites them to disagree.
+- name: Remove cloud-init's network definition
+  ansible.builtin.file:
+    path: /etc/netplan/50-cloud-init.yaml
+    state: absent
+  notify: Apply netplan
 
 - name: Install base packages
   ansible.builtin.apt:
@@ -83,7 +126,7 @@
       Remove with: nmcli connection delete <name>
   when: wifi_profiles.files | length > 0
 
-- name: Create NVMe swapfile
+- name: Create swapfile
   ansible.builtin.command:
     cmd: "fallocate -l {{ swapfile_size_mb }}M {{ swapfile_path }}"
     creates: "{{ swapfile_path }}"
@@ -105,7 +148,7 @@
   ansible.builtin.command: "mkswap {{ swapfile_path }}"
   when: "'swap file' not in swapfile_type.stdout"
 
-# Priority below zram's 100 so compressed RAM fills first and the NVMe is
+# Priority below zram's 100 so compressed RAM fills first and the card is
 # only touched under real pressure.
 - name: Register swapfile in fstab
   ansible.posix.mount:
@@ -118,6 +161,31 @@
 - name: Activate swap
   ansible.builtin.command: swapon -a
   changed_when: false
+
+# ── microSD wear (DR-003 7) ───────────────────────────────────────────────
+- name: Mount root with noatime and batched journal commits
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\S+\s+/\s+ext4\s+)\S+'
+    replace: '\g<1>{{ root_mount_opts }}'
+  notify: Remount root
+
+- name: Create journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Keep the systemd journal in RAM
+  ansible.builtin.template:
+    src: 10-volatile.conf.j2
+    dest: /etc/systemd/journald.conf.d/10-volatile.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
 
 - name: Install unattended-upgrades
   ansible.builtin.apt:

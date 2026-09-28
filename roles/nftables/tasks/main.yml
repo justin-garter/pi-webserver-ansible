@@ -4,24 +4,19 @@
     name: nftables
     state: present
 
-# WireGuard must exist before this runs, or the SSH rule references an
-# interface that isn't there and you lock yourself out of a host with no
-# LAN-side fallback. Role order in site.yml enforces this.
-- name: Verify the management interface exists before restricting SSH to it
+# The admin sources must be non-empty, or the ruleset admits no SSH at all and
+# the only way back in is the console.
+- name: Refuse to deploy a ruleset that admits no SSH source
   ansible.builtin.assert:
-    that: nft_ssh_interface_only in ansible_facts['interfaces']
-    fail_msg: >-
-      {{ nft_ssh_interface_only }} is not present. Applying this ruleset would
-      make SSH unreachable. Bring WireGuard up first.
+    that: ssh_admin_sources | length > 0
+    fail_msg: ssh_admin_sources is empty. Applying this ruleset would lock out SSH.
 
-# A host that terminates a tunnel does not route by default, and should not
-# unless something actually needs it. Driven off the same variable as the
-# forward rules so the two can never disagree.
-- name: Set IPv4 forwarding to match the configured routed flows
+# This host does not route (DR-003 4.2). Pinned, not derived.
+- name: Disable IPv4 forwarding
   ansible.posix.sysctl:
     name: net.ipv4.ip_forward
-    value: "{{ '1' if nft_forward_allow | length > 0 else '0' }}"
-    sysctl_file: /etc/sysctl.d/99-wg-forward.conf
+    value: "0"
+    sysctl_file: /etc/sysctl.d/99-no-forward.conf
     sysctl_set: true
     reload: true
     state: present
@@ -48,10 +43,7 @@
   check_mode: false
   changed_when: false
 
-- name: Assert forwarding matches intent
+- name: Assert forwarding is off
   ansible.builtin.assert:
-    that: >-
-      ip_forward_state.stdout | trim == ('1' if nft_forward_allow | length > 0 else '0')
-    fail_msg: >-
-      net.ipv4.ip_forward is {{ ip_forward_state.stdout | trim }}, which does not
-      match the {{ nft_forward_allow | length }} configured forward rule(s).
+    that: ip_forward_state.stdout | trim == '0'
+    fail_msg: net.ipv4.ip_forward is {{ ip_forward_state.stdout | trim }}; this host must not route.
