@@ -14,7 +14,10 @@ dmz_dns:
   - 10.10.40.1
 
 # ── SSH ──────────────────────────────────────────────────────────────────────
-ssh_port: 2222
+# Standard port (DR-003 11.4). A non-standard port only hid SSH from scanners;
+# nftables and OPNsense now admit SSH from two sources only, which is the real
+# control, and 22 matches the stock image so bootstrap needs no port change.
+ssh_port: 22
 
 # ── Firewall ─────────────────────────────────────────────────────────────────
 # SSH is admitted by source address, not interface (DR-003 4.2, amended
@@ -81,12 +84,13 @@ f2b_caddy404_bantime: 3600
 
 # ── DDNS ─────────────────────────────────────────────────────────────────────
 ddns_zone_id: 63de65311b9a3ed27665b03d0dd88ed8
-# origin is DNS-only (unproxied) so Minecraft can CNAME to it; the apex is
-# proxied. Both must already exist in Cloudflare: the updater edits records,
-# it never creates them.
+# Apex only for now. The apex and www are proxied, so the home IP is not
+# published. origin (DNS-only, for Minecraft) is deliberately NOT created until
+# Minecraft exists (DR-003 11.5): a DNS-only record publishes the home IP and
+# lets anyone skip Cloudflare. Records must already exist in Cloudflare; the
+# updater edits, it never creates.
 ddns_records:
   - justingarter.com
-  - origin.justingarter.com
 ddns_interval: 5min
 # ddns_api_token lives in vault.yml
 
