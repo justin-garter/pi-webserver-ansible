@@ -1,5 +1,9 @@
 # Managed by Ansible — roles/caddy
 {
+    # Certificates are supplied (Cloudflare Origin CA), not obtained, and
+    # Cloudflare redirects http at its edge, so Caddy opens no :80 listener.
+    auto_https disable_redirects
+
     servers {
         # h3 omitted: udp/443 is not forwarded and Cloudflare reaches origin
         # over TCP. Advertising alt-svc h3 only makes clients try QUIC, fail,
@@ -15,6 +19,8 @@
 }
 
 {{ caddy_site_domains | join(', ') }} {
+    tls {{ caddy_tls_cert }} {{ caddy_tls_key }}
+
     root * {{ caddy_web_root }}
     file_server
     encode gzip

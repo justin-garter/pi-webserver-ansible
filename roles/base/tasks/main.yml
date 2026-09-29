@@ -1,4 +1,21 @@
 ---
+# R13: a host whose only way in is the network is unrecoverable when the
+# network is what broke. The account must be able to log in at a console with
+# a password (set in Imager, kept in the password manager). SSH stays key-only.
+- name: Read console account password status
+  ansible.builtin.command: "passwd -S {{ ansible_user }}"
+  register: console_pw
+  check_mode: false
+  changed_when: false
+
+- name: Refuse to continue without a console break-glass password
+  ansible.builtin.assert:
+    that: console_pw.stdout.split()[1] == 'P'
+    fail_msg: >-
+      {{ ansible_user }} has no usable password (status {{ console_pw.stdout.split()[1] }}).
+      Set one at the console with `sudo passwd {{ ansible_user }}` and store it in
+      the password manager before this host goes behind its firewall.
+
 - name: Set hostname
   ansible.builtin.hostname:
     name: "{{ host_name }}"
@@ -39,6 +56,75 @@
   loop:
     - user-data
     - network-config
+
+# Only move the address if the host is already on it. A mismatch here means
+# the bootstrap went wrong; applying netplan would strand the host mid-run.
+- name: Confirm the host is already on its DMZ address
+  ansible.builtin.assert:
+    that: dmz_address in (ansible_facts[dmz_interface]['ipv4']['address'] | default(''))
+    fail_msg: >-
+      {{ dmz_interface }} is not on {{ dmz_address }}. Fix the bootstrap address
+      before letting this role pin it.
+
+# NetworkManager owns eth0 on Raspberry Pi OS, and its netplan backend absorbs
+# any hand-written netplan file into its own 90-NM-<uuid>.yaml (DR-003 11.7).
+# Writing a netplan file here therefore recreated it on every run and left a
+# second, inactive profile beside the real one. Manage one named NM profile
+# instead; the module compares properties, so a rerun changes nothing.
+- name: Define the DMZ connection profile
+  community.general.nmcli:
+    conn_name: dmz
+    type: ethernet
+    ifname: "{{ dmz_interface }}"
+    method4: manual
+    ip4:
+      - "{{ dmz_address }}/{{ dmz_prefix }}"
+    gw4: "{{ dmz_gateway }}"
+    dns4: "{{ dmz_dns }}"
+    method6: disabled
+    autoconnect: true
+    state: present
+
+- name: Read which profile eth0 is using
+  ansible.builtin.command: "nmcli -g GENERAL.CONNECTION device show {{ dmz_interface }}"
+  register: eth_active
+  check_mode: false
+  changed_when: false
+
+# Same address, so the SSH session survives the switch. async keeps Ansible
+# from hanging on the second-long blip while NetworkManager swaps profiles.
+- name: Activate the DMZ profile
+  ansible.builtin.command: nmcli connection up dmz
+  when: eth_active.stdout | trim != 'dmz'
+  async: 30
+  poll: 2
+
+- name: List NetworkManager profiles
+  ansible.builtin.command: nmcli -t -f NAME,TYPE connection show
+  register: nm_profiles
+  check_mode: false
+  changed_when: false
+
+# Only after dmz is active: deleting the profile a device is using would flush
+# its address.
+- name: Remove every other ethernet profile
+  community.general.nmcli:
+    conn_name: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ nm_profiles.stdout_lines
+       | map('split', ':')
+       | selectattr('1', 'equalto', '802-3-ethernet')
+       | map(attribute='0')
+       | reject('equalto', 'dmz')
+       | list }}
+
+# cloud-init rendered the bootstrap address here. With cloud-init disabled it
+# never changes again, but it would reappear as a second profile at boot.
+- name: Remove cloud-init's network definition
+  ansible.builtin.file:
+    path: /etc/netplan/50-cloud-init.yaml
+    state: absent
 
 - name: Install base packages
   ansible.builtin.apt:
@@ -83,7 +169,7 @@
       Remove with: nmcli connection delete <name>
   when: wifi_profiles.files | length > 0
 
-- name: Create NVMe swapfile
+- name: Create swapfile
   ansible.builtin.command:
     cmd: "fallocate -l {{ swapfile_size_mb }}M {{ swapfile_path }}"
     creates: "{{ swapfile_path }}"
@@ -105,7 +191,7 @@
   ansible.builtin.command: "mkswap {{ swapfile_path }}"
   when: "'swap file' not in swapfile_type.stdout"
 
-# Priority below zram's 100 so compressed RAM fills first and the NVMe is
+# Priority below zram's 100 so compressed RAM fills first and the card is
 # only touched under real pressure.
 - name: Register swapfile in fstab
   ansible.posix.mount:
@@ -118,6 +204,31 @@
 - name: Activate swap
   ansible.builtin.command: swapon -a
   changed_when: false
+
+# ── microSD wear (DR-003 7) ───────────────────────────────────────────────
+- name: Mount root with noatime and batched journal commits
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\S+\s+/\s+ext4\s+)\S+'
+    replace: '\g<1>{{ root_mount_opts }}'
+  notify: Remount root
+
+- name: Create journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Keep the systemd journal in RAM
+  ansible.builtin.template:
+    src: 10-volatile.conf.j2
+    dest: /etc/systemd/journald.conf.d/10-volatile.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
 
 - name: Install unattended-upgrades
   ansible.builtin.apt:

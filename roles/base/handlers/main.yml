@@ -2,3 +2,11 @@
 - name: Reboot required
   ansible.builtin.debug:
     msg: "config.txt changed — reboot required for radio changes to take effect"
+
+- name: Remount root
+  ansible.builtin.command: mount -o remount /
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted

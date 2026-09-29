@@ -18,8 +18,6 @@
       tags: [base]
     - role: ssh
       tags: [ssh]
-    - role: wireguard          # before nftables: the firewall depends on wg0 existing
-      tags: [wireguard]
     - role: nftables
       tags: [nftables, firewall]
     - role: caddy

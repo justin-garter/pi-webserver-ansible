@@ -1,0 +1,5 @@
+# Managed by Ansible — roles/base
+# Journal lives in RAM only: no card writes (DR-003 7). Lost on reboot, accepted.
+[Journal]
+Storage=volatile
+RuntimeMaxUse={{ journald_runtime_max }}

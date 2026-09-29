@@ -25,39 +25,18 @@ table inet filter {
         ip6 nexthdr icmpv6 icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, packet-too-big, destination-unreachable, time-exceeded } accept
 
         tcp dport { {{ nft_public_tcp_ports | join(', ') }} } accept
-{% for port in nft_public_udp_ports %}
-        udp dport {{ port }} accept comment "wireguard"
-{% endfor %}
 
         # HTTP/3 (udp 443) deliberately absent: not forwarded at the router,
         # and Cloudflare reaches origin over TCP. Caddy is configured not to
         # advertise h3 so clients don't attempt QUIC and fall back.
 
-        iifname "{{ nft_ssh_interface_only }}" tcp dport {{ ssh_port }} accept comment "ssh — wireguard only"
+        # Source-scoped, not interface-scoped: there is no management interface
+        # on this host any more. OPNsense enforces the same scope upstream.
+        ip saddr { {{ ssh_admin_sources | join(', ') }} } tcp dport {{ ssh_port }} accept comment "ssh — mgmt + admin desktop only"
 
         counter comment "dropped"
     }
-    chain forward {
-        type filter hook forward priority 0; policy drop;
-{% if nft_forward_allow | length > 0 %}
-
-        ct state established,related accept
-
-        # Deny tunnel -> trusted LAN before any accept below can match it. The
-        # DMZ VLAN already blocks this at the router; stating it here makes the
-        # intent explicit and auditable on the one host that could otherwise
-        # become a pivot into the LAN.
-        iifname "{{ wg_interface }}" ip daddr {{ lan_subnet }} drop comment "VPN must never reach the LAN"
-
-        # No NAT or masquerade, deliberately: the destination host sees the real
-        # 10.10.10.x source, so its logs attribute connections to a specific
-        # peer instead of blaming this host for everything.
-{% for f in nft_forward_allow %}
-        iifname "{{ wg_interface }}" oifname "{{ dmz_interface }}" ip saddr {{ wg_subnet }} ip daddr {{ f.dest }} tcp dport {{ f.port }} ct state new accept comment "{{ f.name }}"
-{% endfor %}
-
-        counter comment "forward dropped"
-{% endif %}
-    }
+    # This host does not route. Nothing is forwarded, ever.
+    chain forward { type filter hook forward priority 0; policy drop; }
     chain output  { type filter hook output  priority 0; policy accept; }
 }
