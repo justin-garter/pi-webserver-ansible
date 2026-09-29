@@ -68,6 +68,36 @@
     group: "{{ caddy_web_root_group }}"
     mode: "0755"
 
+# Before the Caddyfile: `caddy validate` loads the certificate files, so they
+# must exist first. root owns them; caddy can only read.
+- name: Ensure TLS directory
+  ansible.builtin.file:
+    path: "{{ caddy_tls_dir }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0750"
+
+- name: Deploy origin certificate
+  ansible.builtin.copy:
+    src: origin.pem
+    dest: "{{ caddy_tls_cert }}"
+    owner: root
+    group: caddy
+    mode: "0644"
+  notify: Reload caddy
+
+# The source file is ansible-vault encrypted; copy decrypts it in transit.
+- name: Deploy origin private key
+  ansible.builtin.copy:
+    src: origin.key.vault
+    dest: "{{ caddy_tls_key }}"
+    owner: root
+    group: caddy
+    mode: "0640"
+  no_log: true
+  notify: Reload caddy
+
 - name: Deploy Caddyfile
   ansible.builtin.template:
     src: Caddyfile.j2

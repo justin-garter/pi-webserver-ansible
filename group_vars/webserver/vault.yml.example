@@ -9,3 +9,8 @@
 
 # Cloudflare API token, scoped Zone -> DNS -> Edit on justingarter.com only
 ddns_api_token: "REPLACE_ME"
+
+# The Cloudflare Origin CA private key is NOT in this file. It is its own
+# vault-encrypted file, roles/caddy/files/origin.key.vault, created with:
+#   ansible-vault encrypt ~/origin.key --output roles/caddy/files/origin.key.vault
+# so the plaintext key never exists inside the repo.

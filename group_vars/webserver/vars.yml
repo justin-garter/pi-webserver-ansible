@@ -28,7 +28,10 @@ ssh_port: 22
 ssh_admin_sources:
   - 10.10.10.0/24
   - 10.10.20.10/32
-nft_public_tcp_ports: [80, 443]
+# 443 only (DR-003 11.8). Cloudflare redirects http to https at its edge
+# (Always Use HTTPS), and the origin certificate needs no ACME challenge, so
+# nothing needs port 80.
+nft_public_tcp_ports: [443]
 # HTTP/3 (udp 443) intentionally absent: not forwarded at the router, and
 # Cloudflare reaches origin over TCP. Caddy is told not to advertise it.
 
@@ -40,6 +43,13 @@ caddy_web_root: /var/www/portfolio
 caddy_web_root_owner: justin
 caddy_web_root_group: justin
 caddy_log_path: /var/log/caddy/access.log
+# Cloudflare Origin CA certificate (DR-003 11.8). Trusted by Cloudflare only,
+# which is fine: the site is always proxied. Valid 15 years; renew before
+# expiry (date recorded in the runbook). The key ships vault-encrypted as
+# roles/caddy/files/origin.key.vault; the certificate is public.
+caddy_tls_dir: /etc/caddy/tls
+caddy_tls_cert: /etc/caddy/tls/origin.pem
+caddy_tls_key: /etc/caddy/tls/origin.key
 caddy_gomemlimit: 256MiB
 caddy_memory_max: 384M
 caddy_protocols: h1 h2
