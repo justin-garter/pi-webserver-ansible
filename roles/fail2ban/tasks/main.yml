@@ -38,6 +38,13 @@
     enabled: true
     state: started
 
+# Handlers normally run at the end of the play. On a bare host the package
+# install starts fail2ban with Debian's defaults (sshd only), and the restart
+# that loads jail.local would not happen until after the assert below, so the
+# assert would check the package defaults instead of this role's config.
+- name: Apply fail2ban config before verifying it
+  ansible.builtin.meta: flush_handlers
+
 - name: List active jails
   ansible.builtin.command: fail2ban-client status
   register: f2b_status

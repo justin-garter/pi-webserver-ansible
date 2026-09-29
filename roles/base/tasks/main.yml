@@ -66,22 +66,65 @@
       {{ dmz_interface }} is not on {{ dmz_address }}. Fix the bootstrap address
       before letting this role pin it.
 
-- name: Pin the DMZ address in netplan
-  ansible.builtin.template:
-    src: 90-dmz.yaml.j2
-    dest: /etc/netplan/90-dmz.yaml
-    owner: root
-    group: root
-    mode: "0600"
-  notify: Apply netplan
+# NetworkManager owns eth0 on Raspberry Pi OS, and its netplan backend absorbs
+# any hand-written netplan file into its own 90-NM-<uuid>.yaml (DR-003 11.7).
+# Writing a netplan file here therefore recreated it on every run and left a
+# second, inactive profile beside the real one. Manage one named NM profile
+# instead; the module compares properties, so a rerun changes nothing.
+- name: Define the DMZ connection profile
+  community.general.nmcli:
+    conn_name: dmz
+    type: ethernet
+    ifname: "{{ dmz_interface }}"
+    method4: manual
+    ip4:
+      - "{{ dmz_address }}/{{ dmz_prefix }}"
+    gw4: "{{ dmz_gateway }}"
+    dns4: "{{ dmz_dns }}"
+    method6: disabled
+    autoconnect: true
+    state: present
+
+- name: Read which profile eth0 is using
+  ansible.builtin.command: "nmcli -g GENERAL.CONNECTION device show {{ dmz_interface }}"
+  register: eth_active
+  check_mode: false
+  changed_when: false
+
+# Same address, so the SSH session survives the switch. async keeps Ansible
+# from hanging on the second-long blip while NetworkManager swaps profiles.
+- name: Activate the DMZ profile
+  ansible.builtin.command: nmcli connection up dmz
+  when: eth_active.stdout | trim != 'dmz'
+  async: 30
+  poll: 2
+
+- name: List NetworkManager profiles
+  ansible.builtin.command: nmcli -t -f NAME,TYPE connection show
+  register: nm_profiles
+  check_mode: false
+  changed_when: false
+
+# Only after dmz is active: deleting the profile a device is using would flush
+# its address.
+- name: Remove every other ethernet profile
+  community.general.nmcli:
+    conn_name: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ nm_profiles.stdout_lines
+       | map('split', ':')
+       | selectattr('1', 'equalto', '802-3-ethernet')
+       | map(attribute='0')
+       | reject('equalto', 'dmz')
+       | list }}
 
 # cloud-init rendered the bootstrap address here. With cloud-init disabled it
-# never changes again, but two files describing eth0 invites them to disagree.
+# never changes again, but it would reappear as a second profile at boot.
 - name: Remove cloud-init's network definition
   ansible.builtin.file:
     path: /etc/netplan/50-cloud-init.yaml
     state: absent
-  notify: Apply netplan
 
 - name: Install base packages
   ansible.builtin.apt:

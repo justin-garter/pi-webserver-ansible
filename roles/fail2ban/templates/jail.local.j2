@@ -5,8 +5,8 @@
 banaction          = {{ f2b_banaction }}
 banaction_allports = {{ f2b_banaction_allports }}
 
-# The WireGuard subnet is the only management path in. A self-ban there is a
-# physical trip to the basement.
+# ssh_admin_sources are the only management paths in (Mgmt VLAN and the admin
+# desktop). A self-ban there means recovery at the console.
 ignoreip = {{ f2b_ignoreip }}
 
 [sshd]

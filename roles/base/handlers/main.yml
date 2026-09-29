@@ -3,9 +3,6 @@
   ansible.builtin.debug:
     msg: "config.txt changed — reboot required for radio changes to take effect"
 
-- name: Apply netplan
-  ansible.builtin.command: netplan apply
-
 - name: Remount root
   ansible.builtin.command: mount -o remount /
 
