@@ -22,6 +22,11 @@
     tls {{ caddy_tls_cert }} {{ caddy_tls_key }}
 
     root * {{ caddy_web_root }}
+
+    # The site links pages without the extension (href="projects"). Serve
+    # /projects from projects.html. Without this every page but / is a 404.
+    try_files {path} {path}.html
+
     file_server
     encode gzip
 
