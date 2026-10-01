@@ -352,8 +352,9 @@ must print `$ANSIBLE_VAULT;1.1;AES256` twice.
 - `caddy-404` blocking at Cloudflare, with the web traffic dashboard (Section 10).
 - Card overprovisioning (DR-003 7: image into about 16 GB, leave the rest unallocated) was
   not done. The image auto-expanded. Revisit at the next rebuild.
-- `wrk` stays in `verification_packages`, but the August load-test figures were measured on
-  NVMe at the old site. Retake them or retract them from the site (DR-003 10).
+- `wrk` stays in `verification_packages`. The August load-test figures stay on the site,
+  labelled as measured on the previous NVMe build (DR-003 11.11). Retake them only if the
+  site ever cites them as current.
 - No serial console. A USB-to-TTL adapter would make console recovery possible from the desk.
 
 ---
