@@ -45,7 +45,7 @@ client — you are not going to get further.
 **Run on: WORKSTATION**
 
 ```powershell
-scp -r "C:\Users\garte\OneDrive\Documents\Projects\Web Portfolio\Version 1.6\*" WebServer:/var/www/portfolio/
+scp -r "C:\Projects\Web Portfolio\Version 1.6\*" WebServer:/var/www/portfolio/
 ```
 
 Change the version folder to whichever one you are deploying.
@@ -59,7 +59,7 @@ To save typing this every time, put a function in your PowerShell profile
 
 ```powershell
 function Deploy-Portfolio($v) {
-    scp -r "C:\Users\garte\OneDrive\Documents\Projects\Web Portfolio\Version $v\*" WebServer:/var/www/portfolio/
+    scp -r "C:\Projects\Web Portfolio\Version $v\*" WebServer:/var/www/portfolio/
 }
 ```
 
