@@ -5,7 +5,8 @@ host_timezone: America/New_York
 
 # ── Network ──────────────────────────────────────────────────────────────────
 # VLAN 40 behind OPNsense (DR-002, DR-003). The DMZ has no DHCP by design, so
-# the address is pinned in netplan by roles/base rather than leased.
+# the address is owned by a NetworkManager profile (dmz) that roles/base
+# manages, rather than leased (DR-003 11.7).
 dmz_interface: eth0
 dmz_address: 10.10.40.10
 dmz_prefix: 24

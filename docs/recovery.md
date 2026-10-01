@@ -1,207 +1,213 @@
 # Recovery
 
-Getting back in when something has gone wrong. Ordered by how bad the situation is.
+Getting the site back, or getting back into the Pi, when something has gone wrong.
 
-**Before doing anything: work out which layer is broken.** Most wasted time in a
-recovery comes from fixing the wrong thing confidently. The tests below narrow it down
-in about a minute.
+## TLDR
+
+1. Find the broken layer with the triage below before fixing anything.
+2. The console is the break-glass: monitor, keyboard, `justin` and the password from the
+   password manager. It works with every network layer down (R13).
+3. Nothing on the Pi is unique. When in doubt, reflash and follow
+   [Rebuild from scratch](rebuild-from-scratch.md). About an hour.
 
 ---
 
 ## Triage
 
-**Run on: WORKSTATION**, with WireGuard **deactivated**:
+Work from the outside in. Each row assumes the rows above it passed.
+
+**Run on: WORKSTATION**
 
 ```powershell
-ping -n 2 192.168.54.180
+curl.exe -s -o NUL -w "status=%{http_code}`n" https://justingarter.com/
+ping -n 2 10.10.40.1
+ping -n 2 10.10.40.10
+Test-NetConnection 10.10.40.10 -Port 22
+Test-NetConnection 10.10.40.10 -Port 443
+ipconfig | findstr IPv4
 ```
 
-| Result | Meaning |
-|---|---|
-| Times out | Expected — LAN↔DMZ is blocked. Tells you nothing. Move on. |
-| **Replies** | The DMZ isolation is open. Something changed on the router. |
+| Result | Broken layer | Go to |
+|---|---|---|
+| Site 200 | Nothing public. If SSH is the problem, continue down the table | |
+| Site 52x (Cloudflare error page) | Origin unreachable from Cloudflare | *Site down, Pi fine* |
+| `10.10.40.1` no reply | OPNsense or Proxmox. The whole lab is down, not just the Pi | `proxmox-host-jg.md`, OOB path |
+| `10.10.40.10` no reply, gateway replies | Pi off, card failed, cable, or switch port 3 | *Pi unreachable* |
+| Ping replies, 22 **times out** | Firewall dropping you. Usually the desktop is not on `10.10.20.10` | *SSH timed out* |
+| Ping replies, 22 **refused** | sshd not listening | Console |
+| 443 open, site still down | Cloudflare, DNS or the ingress path | *Site down, Pi fine* |
 
-Now activate WireGuard and read the client panel:
-
-| Symptom | Where the problem is |
-|---|---|
-| No handshake, 0 B received | Tunnel. See *Tunnel down* below. |
-| Handshake OK, `ssh WebServer` **refused** | Host is up, nothing listening on 2222. See *Port mismatch*. |
-| Handshake OK, `ssh WebServer` **times out** | Firewall dropping. See *Port mismatch*. |
-| SSH works, site is down | Not a recovery problem. See [Routine checks](routine-checks.md). |
-
-**Refused and timed out mean different things and it is worth being precise.** Refused
-is a RST — something answered and declined, so the packet reached the host and nothing
-was listening. Timed out is silence — a firewall dropped it. Confusing the two sends you
-to the wrong layer.
+**Timed out and refused mean different things.** Refused is a RST: the packet reached the Pi
+and nothing was listening. Timed out is silence: a firewall dropped it.
 
 ---
 
-## Tunnel down
+## SSH timed out
 
-Active with no handshake and bytes only going out means your packets are leaving and
-nothing is coming back.
+### Step 1. Check the desktop's address
 
-**Check the endpoint first.** In the WireGuard client, hit **Edit** and read the literal
-`Endpoint` line.
+`ipconfig` must show `10.10.20.10`. The Pi admits SSH only from that address and
+`10.10.10.0/24`. If the desktop holds a different address, the OPNsense static mapping was
+lost or the desktop came up on Wi-Fi.
 
-- If it is a **hard-coded IP**, that is almost certainly the fault. The public address
-  is dynamic and has changed twice within fifteen minutes. Change it to
-  `vpn.justingarter.com:51820` and reactivate — WireGuard re-resolves on handshake
-  failure, so a hostname survives a renumber and an IP does not.
-- If it is already the hostname, check that the DNS record is current. `vpn` is a
-  DNS-only (grey-cloud) record; if it were proxied, Cloudflare would not forward
-  WireGuard's UDP at all.
+**Check:** `10.10.20.10` on the wired adapter. If not, fix the mapping or renew the lease,
+then retry SSH.
 
-**Then check the router forward.** `51820/udp` must point at `192.168.54.180`. If the
-host's IP has drifted off the static address — which happens if a rebuild left it on
-DHCP — the forward lands nowhere.
+### Step 2. Check the OPNsense MAIN to DMZ path
 
-**If you are on the same LAN**, you can bypass NAT hairpinning entirely as a test by
-temporarily setting the endpoint to `192.168.54.180:51820`. This only works with a
-LAN↔DMZ router rule open, so it is a diagnostic rather than a fix. Put it back to the
-hostname afterwards.
+OPNsense web UI > **Firewall** > **Log Files** > **Live View**, filter on `10.10.40.10`, then
+retry SSH.
 
----
+**Check:** the connection shows as passed. If OPNsense blocks it, the problem is upstream of
+the Pi.
 
-## Port mismatch: firewall and sshd disagree
+### Step 3. If both pass, it is the Pi's ruleset
 
-The signature is unmistakable once you know it:
+Go to the console section.
 
-| Target | Result |
-|---|---|
-| `192.168.54.180:2222` | Connection **refused** |
-| `192.168.54.180:22` | Connection **timed out** |
-
-Firewall permitting 2222 with nothing listening there, sshd listening on 22 with the
-firewall dropping it. The two ends disagree in opposite directions.
-
-**Cause.** Ansible flushes handlers at the *end* of a play, and a failed task aborts the
-play before that happens. If a run applies the firewall (which takes effect
-immediately) and then fails before the queued sshd restart, the ruleset demands a port
-the daemon has not moved to.
-
-**Fix: power cycle the host.** On boot, sshd reads its drop-in and binds the configured
-port, nftables loads from `/etc/nftables.conf`, and `wg-quick@wg0` starts. All three are
-enabled, so everything realigns on its own. There is nothing to repair — the config on
-disk is already correct, it just was not loaded.
-
-This requires physically reaching the machine. Which is the argument for the serial
-console below.
+**Check:** you are at the console.
 
 ---
 
-## Locked out entirely
+## Pi unreachable
 
-No tunnel, no SSH, no console. In order of preference:
+### Step 1. Look at it
 
-**1. Power cycle.** Fixes the port-mismatch case above and anything else where the
-on-disk config is right and the running state is not. Try it first; it costs one trip
-and no risk.
+Power LED, activity LED, switch port 3 link light.
 
-**2. Boot the rescue media.** `BOOT_ORDER=0xf416` tries NVMe first and falls through to
-the SD card automatically **if the NVMe will not boot**. That covers a corrupt boot
-partition but not a host that boots fine and is merely unreachable.
+**Check:** you know whether it is powered and linked.
 
-To force the SD when the NVMe boots correctly, you need the EEPROM changed — which
-needs a working system, which is the thing you do not have. In that situation the
-options are physically removing the NVMe, or a serial console.
+### Step 2. Power cycle
 
-**3. Temporary router rule.** If the host is up and only the tunnel is broken, opening
-LAN↔DMZ on the router gets you to it directly. Be clear about the cost: consumer
-firmware generally has no directional control, so this also permits DMZ→LAN for the
-duration. Close it as soon as you are done and prove it with the isolation tests in
-[Routine checks](routine-checks.md).
+Most running-state problems clear on boot: sshd, nftables, NetworkManager and Caddy all
+load their on-disk config. That config is what the playbook wrote, so it is correct unless
+someone edited it by hand.
 
-**4. Restore from the disk image.** See below.
+**Check:** `ping -n 2 10.10.40.10` replies within two minutes.
+
+### Step 3. Console
+
+If it still does not reply, attach a monitor and keyboard and go to the console section.
+
+**Check:** you see a login prompt. No prompt, or a kernel panic or filesystem errors on
+screen, means the card. Go to *Card failed*.
 
 ---
 
-## Restoring from a disk image
+## Console break-glass
 
-If you have a partclone image from a rebuild, boot the rescue media and write it back.
+### Step 1. Log in
 
-**Run on: SERVER (rescue environment)**
+`justin`, password from the password manager.
 
-Confirm where you are before touching anything:
+**Check:** shell prompt.
+
+### Step 2. Read the state
 
 ```bash
-hostname
-findmnt -n -o SOURCE /                # must be the SD, not nvme
-lsblk -o NAME,SIZE,TYPE,MOUNTPOINT    # nvme0n1 must have no mountpoints
+ip -br a
+nmcli -t -f NAME,DEVICE,STATE con show
+systemctl --failed
+sudo nft list chain inet filter input
+sudo ss -tlnp
 ```
 
-Restore the partition table, then each partition:
+**Check:** you can name what is wrong: no address, wrong profile, failed unit, a ruleset that
+does not admit your source, or sshd not listening.
+
+### Step 3. Restore SSH temporarily if the ruleset is the problem
 
 ```bash
-sudo sfdisk /dev/nvme0n1 < nvme-partition-table.txt
-sudo partprobe /dev/nvme0n1
-
-zcat nvme-p1-boot.pcl.gz | sudo partclone.vfat -r -s - -o /dev/nvme0n1p1
-zcat nvme-p2-root.pcl.gz | sudo partclone.ext4 -r -s - -o /dev/nvme0n1p2
-
-sudo partprobe /dev/nvme0n1
-lsblk -f /dev/nvme0n1
+sudo systemctl stop nftables
 ```
 
-Then shut down, restore `BOOT_ORDER=0xf416`, and boot the NVMe.
+Stopping the unit flushes the whole ruleset, including fail2ban's table, so the Pi accepts
+everything OPNsense lets through. OPNsense still admits only MAIN and MGMT on 22 and
+Cloudflare on 443, so exposure is limited. Keep the window short.
 
-The image is a point-in-time snapshot. Anything deployed after it was taken — site
-content in particular — needs redeploying.
+**Check:** `ssh justin@10.10.40.10 hostname` works from WSL.
+
+### Step 4. Fix it in the repo and rerun the playbook
+
+Never fix a managed file on the Pi. Fix the role or `vars.yml`, then:
+
+```bash
+ansible-playbook site.yml
+```
+
+The `nftables` role starts the unit again, so the ruleset comes back as part of the run.
+
+**Check:** `failed=0`, then `ssh justin@10.10.40.10 systemctl is-active nftables` prints `active`, and a new SSH
+session works.
 
 ---
 
-## Recovering a locked-out account
+## Site down, Pi fine
 
-Password locked or lost, but disk access available via rescue media:
+The Pi serves locally (`status=200` from the local check in
+[Routine checks](routine-checks.md)) but the public site is down.
+
+### Step 1. Is Cloudflare pointed at the current IP?
 
 ```bash
-sudo mount /dev/nvme0n1p2 /mnt
-sudo mount /dev/nvme0n1p1 /mnt/boot/firmware
-for d in proc sys dev dev/pts; do sudo mount --bind /$d /mnt/$d; done
-sudo chroot /mnt /bin/bash
-
-passwd justin
-# or re-add the SSH key:
-mkdir -p /home/justin/.ssh
-echo '<public key>' > /home/justin/.ssh/authorized_keys
-chown -R justin:justin /home/justin/.ssh
-chmod 700 /home/justin/.ssh && chmod 600 /home/justin/.ssh/authorized_keys
-exit
-
-for d in dev/pts dev sys proc boot/firmware; do sudo umount /mnt/$d; done
-sudo sync && sudo umount /mnt
+ssh justin@10.10.40.10 'curl -s -4 https://ifconfig.me; echo'
+dig +short justingarter.com @1.1.1.1
 ```
 
-Same procedure works for undoing a firewall change that locked you out — edit
-`/etc/nftables.conf` under the chroot before rebooting.
+The second answer is a Cloudflare address because the record is proxied. Compare the real
+record in the Cloudflare dashboard > **DNS** > `justingarter.com`.
+
+**Check:** the dashboard A record matches `ifconfig.me`. If not, force a DDNS run
+([Making changes](making-changes.md#changing-a-secret), Step 3) and read its log.
+
+### Step 2. Is the Archer still forwarding 443?
+
+From a phone on ROOM_NET: Archer admin > **NAT Forwarding** > **Virtual Servers**.
+
+**Check:** one entry, TCP 443 to `192.168.0.254:443`.
+
+### Step 3. Is OPNsense still passing it?
+
+OPNsense: `CLOUDFLARE_V4` alias **Loaded#** non-zero; Destination NAT WAN 443 to
+`10.10.40.10:443`; the matching WAN pass rule. Live View filtered on `10.10.40.10` shows
+Cloudflare sources passing.
+
+**Check:** all three present and the live view shows passes. An empty alias blocks
+everything; check its last refresh.
+
+### Step 4. Is Cloudflare's SSL mode still Full (Strict)?
+
+**Check:** **SSL/TLS** > **Overview** shows Full (Strict). A 526 error means Cloudflare
+rejected the origin certificate: confirm with the certificate check in
+[Routine checks](routine-checks.md#certificate).
 
 ---
 
-## What is missing, and why it matters
+## Card failed
 
-**There is no serial console.** The EEPROM already has `BOOT_UART=1`, so a USB-to-TTL
-adapter on three GPIO pins would give console access from the desk. Roughly ten dollars.
+Reflash and rebuild: [Rebuild from scratch](rebuild-from-scratch.md). Use a new card if the
+old one threw errors. Nothing needs restoring: configuration and certificate come from this
+repo and content from `Web Portfolio`.
 
-Without it, every recovery above that is not "power cycle" requires physically opening
-the case in a basement. During the August 2026 rebuild there was a window where the only
-path back was hardware. On a headless host whose management path depends on the host
-itself booting correctly and bringing up a tunnel, that is the missing piece — not a
-convenience.
+**Check:** the rebuild's Step 12 passes.
 
-**There is no out-of-band power control.** A smart plug would turn the most common
-recovery — the power cycle — into something doable from a phone.
+---
+
+## Lost the `justin` password
+
+There is one card and no rescue boot, so there is no chroot path. Reflash and rebuild, then
+store the new password in the password manager before Step 3 of the rebuild.
+
+**Check:** console login works with the stored password before the playbook runs.
 
 ---
 
 ## After any recovery
 
-Do not stop at "it works again."
+1. Run every check in [Routine checks](routine-checks.md).
+2. Confirm `nftables` is `active` if you stopped it.
+3. Write down what broke, what the symptom looked like, and what fixed it, here or in the
+   runbook build history. The symptom-to-cause mapping is what makes the next recovery
+   fast.
 
-1. **Run the full check list** in [Routine checks](routine-checks.md), especially the
-   segmentation tests in both directions.
-2. **Close anything you opened.** Temporary router rules are extremely easy to forget
-   once access is restored, and they leave DMZ→LAN open indefinitely.
-3. **Write down what happened** while it is fresh — what broke, what the symptom looked
-   like, what actually fixed it. The symptom-to-cause mapping is the part you will have
-   forgotten in three months, and it is the part that makes the next recovery fast.
+**Check:** the routine checks pass and the note is committed.

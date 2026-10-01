@@ -1,302 +1,393 @@
 # Making changes
 
-Changing the host's configuration. Everything here goes through Ansible unless there
-is a stated reason it cannot.
+Changing the Pi's configuration. Everything goes through Ansible unless this page says
+otherwise.
 
-**The rule: if it is managed by a role, do not edit it on the host.** The next playbook
-run overwrites it, and you lose the change at the worst possible moment — usually
-months later, with no memory of having made it.
+**The rule: if a role manages it, do not edit it on the Pi.** The next run overwrites the
+edit, usually months later, with no memory of having made it.
+
+All CONTROL NODE commands run from `/mnt/c/Projects/_Complete/pi-webserver-ansible` with the
+agent loaded (`eval "$(ssh-agent -s)" && ssh-add /mnt/c/Users/garte/.ssh/id_ed25519`).
+Every `ansible-playbook` run prompts for the become password, then the vault password.
 
 ---
 
 ## The normal change loop
 
+### Step 1. Edit the role or `group_vars/webserver/vars.yml`
+
+**Check:** `git diff` in PowerShell shows only the change you meant.
+
+### Step 2. Dry run and read the diff
+
 **Run on: CONTROL NODE**
 
 ```bash
-cd ~/pi-webserver-ansible
-
-# 1. edit the role or the variables
-# 2. dry run, and actually read the diff
-ansible-playbook -i inventory site.yml --check --diff --ask-vault-pass
-
-# 3. apply
-ansible-playbook -i inventory site.yml --ask-vault-pass
-
-# 4. confirm idempotency
-ansible-playbook -i inventory site.yml --ask-vault-pass    # expect changed=0
+ansible-playbook site.yml --check --diff
 ```
 
-Scope a run to one role with tags: `base`, `ssh`, `wireguard`, `nftables`/`firewall`,
-`caddy`/`web`, `fail2ban`/`security`, `ddns`/`dns`, `monitoring`.
+Scope to one role with `--tags`: `base`, `ssh`, `nftables` or `firewall`, `caddy` or `web`,
+`fail2ban` or `security`, `ddns` or `dns`, `monitoring`.
+
+Check mode cannot run handlers and cannot see what earlier tasks would have created. A clean
+dry run is good evidence, not proof.
+
+**Check:** every reported change is one you expect.
+
+### Step 3. Apply
 
 ```bash
-ansible-playbook -i inventory site.yml --tags caddy --ask-vault-pass
+ansible-playbook site.yml
 ```
 
-Then commit. The repo is the record; an unpushed change is a change that does not exist
-next time you look.
+**Check:** `failed=0`.
 
-### Reading `--check` output honestly
+### Step 4. Prove idempotency
 
-Check mode cannot run handlers and cannot see the results of tasks that would have run
-earlier in the same play. Two consequences worth knowing:
+```bash
+ansible-playbook site.yml
+```
 
-- Tasks that report `changed` in check mode are not always real changes. A `get_url`
-  without a `checksum` will report changed every run; pinning the checksum makes it
-  honest. The Cloudsmith key task is pinned for exactly this reason.
-- Tasks conditioned on something an earlier task creates may report incorrectly,
-  because that earlier thing does not exist in a dry run.
+**Check:** `changed=0 failed=0`.
 
-A dry run that shows only expected diffs is good evidence. It is not proof.
+### Step 5. Commit and push from PowerShell
+
+```powershell
+cd C:\Projects\_Complete\pi-webserver-ansible
+git add -A
+git commit
+git push
+```
+
+**Check:** `git status` reports a clean tree, up to date with `origin/main`.
 
 ---
 
 ## Firewall changes
 
-**This is the change most likely to lock you out.** The host has no management path
-except WireGuard and no console attached.
+The change most likely to lock you out. The console break-glass exists now (R13), but it
+costs a trip with a monitor and keyboard.
 
-Arm a dead-man switch on the host before applying anything:
-
-**Run on: SERVER**
-```bash
-sudo cp /etc/nftables.conf /etc/nftables.conf.bak
-sudo systemd-run --on-active=300 --unit=fw-rollback \
-  /usr/sbin/nft -f /etc/nftables.conf.bak
-systemctl list-timers fw-rollback --all --no-pager
-```
-
-Apply the change, then **open a second, separate session** and confirm it connects.
-Not the session you already have — an established connection survives rules that would
-block a new one, because `ct state established,related accept` is the first input rule.
-Testing on your existing session proves nothing.
-
-Only once a fresh session works:
-
-```bash
-sudo systemctl stop fw-rollback.timer
-sudo rm /etc/nftables.conf.bak
-```
-
-If you get locked out, do nothing for five minutes and the rollback restores the
-previous ruleset.
-
-### The one the guard does not catch
-
-The `nftables` role asserts `wg0` exists before restricting SSH to it. It does not
-check that **sshd is listening on the port the new ruleset is about to require**.
-
-If you change `ssh_port`, the ssh role writes the config and queues a restart handler
-— and handlers do not run until the *end* of the play. If anything fails in between,
-the firewall demands one port while sshd still listens on another, and you are locked
-out of a headless machine.
-
-Changing `ssh_port` safely:
-
-```bash
-# CONTROL NODE - apply the ssh role alone first, so its handler flushes
-ansible-playbook -i inventory site.yml --tags ssh --ask-vault-pass
-
-# SERVER - confirm the daemon actually moved before touching the firewall
-sudo ss -tlnp | grep sshd
-
-# CONTROL NODE - only now
-ansible-playbook -i inventory site.yml --tags firewall --ask-vault-pass
-```
-
-Verify the socket, not `sshd -T`. `-T` reports parsed config, which will happily agree
-with you while the running daemon is somewhere else entirely.
-
----
-
-## Adding or removing a WireGuard peer
-
-Peers are declared in `group_vars/webserver/vars.yml` and asserted by the wireguard
-role, so this is an Ansible change rather than a host edit.
-
-**On the new client**, generate a keypair and give it an address in `10.10.10.0/24`
-that is not already taken. Client config:
-
-```
-[Interface]
-PrivateKey = <client private key>
-Address    = 10.10.10.N/32
-DNS        = 1.1.1.1
-
-[Peer]
-PublicKey  = <server public key: sudo wg show wg0 public-key>
-Endpoint   = vpn.justingarter.com:51820
-AllowedIPs = 10.10.10.0/24, 192.168.54.0/24
-PersistentKeepalive = 25
-```
-
-**Always use the hostname for `Endpoint`, never a literal IP.** The public address is
-dynamic and has changed twice within fifteen minutes. `vpn.justingarter.com` is a
-DNS-only record kept current by the DDNS timer; a hard-coded IP is a landmine that
-detonates the next time your ISP renumbers you, which is exactly when you need remote
-access.
-
-**Then add the peer to `vars.yml`** with its name, public key, and `allowed_ips`, and
-apply:
-
-```bash
-ansible-playbook -i inventory site.yml --tags wireguard --ask-vault-pass
-```
-
-The handler uses `wg syncconf`, not `wg-quick down/up`, so your own tunnel survives the
-change.
-
-Verify:
-```bash
-# SERVER
-sudo wg show
-```
-
-To remove a peer, delete it from `vars.yml` and re-run. Confirm it is gone from
-`wg show` — a peer removed from the file but still in the running interface means the
-sync did not happen.
-
----
-
-## Rotating the WireGuard server key
-
-The rotation breaks the only connection to the host, by design. Make both ends
-revertible before you start.
-
-1. **Generate on the CONTROL NODE:**
-   ```bash
-   NEW_PRIV=$(wg genkey); echo "$NEW_PRIV" | wg pubkey
-   ```
-2. **On the WORKSTATION**, duplicate the WireGuard tunnel and set the copy's
-   `[Peer] PublicKey` to the new public key. Keep the original — it is your rollback.
-3. **On the SERVER**, back up and arm a timed revert:
-   ```bash
-   sudo cp /etc/wireguard/wg0.conf /etc/wireguard/wg0.conf.bak
-   sudo systemd-run --on-active=300 --unit=wg-rollback /bin/bash -c \
-     'cp /etc/wireguard/wg0.conf.bak /etc/wireguard/wg0.conf && wg syncconf wg0 <(wg-quick strip wg0)'
-   ```
-4. Edit `PrivateKey` with `nano` — not `sed`, which puts the key in shell history —
-   then `sudo bash -c 'wg syncconf wg0 <(wg-quick strip wg0)'`. **Your session dies here.**
-5. Switch to the new tunnel on the workstation. On reconnect:
-   `sudo systemctl stop wg-rollback.timer` and delete the backup.
-6. **Update the vault, then prove the two agree:**
-   ```bash
-   # CONTROL NODE
-   ansible-vault view group_vars/webserver/vault.yml --ask-vault-pass \
-     | awk -F': ' '/^wg_private_key/{gsub(/"/,"",$2); print $2}' | wg pubkey
-   ssh WebServer 'sudo wg show wg0 public-key'
-   ```
-   These must match. Skipping step 6 leaves the playbook holding the old key, and the
-   next apply writes it back and locks you out.
-
----
-
-## Updating Caddy
-
-Caddy does not auto-update. The Cloudsmith repo is pinned out of unattended-upgrades
-because only Debian security origins are permitted, so Caddy CVEs are a manual
-responsibility.
-
-**Run on: SERVER**
-```bash
-caddy version
-sudo apt update
-apt list --upgradable 2>/dev/null | grep -i caddy
-sudo apt install --only-upgrade caddy
-systemctl is-active caddy
-curl -s -o /dev/null -w '%{http_code}\n' --resolve justingarter.com:443:127.0.0.1 https://justingarter.com/
-```
-
-Check the release notes before upgrading — a config-breaking change on a host reachable
-only through a tunnel is not where you want to discover a syntax change.
-
----
-
-## Refreshing the Cloudflare trusted-proxy list
-
-`caddy_trusted_proxies` is a static snapshot. Cloudflare adds ranges over time. When it
-drifts, visitor IPs stop resolving and the `caddy-404` jail starts banning Cloudflare
-edges — which takes the site down for everyone, not just an attacker.
+### Step 1. Arm a dead-man switch on the Pi
 
 **Run on: CONTROL NODE**
-```bash
-curl -s https://www.cloudflare.com/ips-v4
-```
-
-Update `caddy_trusted_proxies` in `group_vars/webserver/vars.yml`, then:
 
 ```bash
-ansible-playbook -i inventory site.yml --tags caddy --check --diff --ask-vault-pass
-ansible-playbook -i inventory site.yml --tags caddy --ask-vault-pass
+ssh -t justin@10.10.40.10 'sudo cp /etc/nftables.conf /etc/nftables.conf.bak && sudo systemd-run --on-active=300 --unit=fw-rollback /usr/sbin/nft -f /etc/nftables.conf.bak && systemctl list-timers fw-rollback --all --no-pager'
 ```
 
-Verify with real traffic — the check is that `client_ip` is a plausible visitor and not
-a Cloudflare address:
+The backup is safe to reapply: the ruleset starts with `table inet filter` then
+`delete table inet filter`, so it replaces only its own table and leaves fail2ban's alone.
+
+**Check:** the timer is listed with about five minutes left.
+
+### Step 2. Apply the change
 
 ```bash
-# SERVER
-sudo tail -5 /var/log/caddy/access.log | jq -r '[.request.remote_ip, .request.client_ip] | @tsv'
+ansible-playbook site.yml --tags firewall
 ```
 
-The IPv6 ranges are deliberately absent because the origin publishes no AAAA record, so
-Cloudflare connects over IPv4. **Add them before publishing an AAAA record**, not after.
+**Check:** `failed=0`.
+
+### Step 3. Open a new SSH session
+
+```bash
+ssh justin@10.10.40.10 'echo new session ok'
+```
+
+It must be a **new** connection. An established session survives rules that block new ones,
+because `ct state established,related accept` is the first input rule.
+
+**Check:** prints `new session ok`.
+
+### Step 4. Disarm the switch
+
+```bash
+ssh -t justin@10.10.40.10 'sudo systemctl stop fw-rollback.timer && sudo rm /etc/nftables.conf.bak'
+```
+
+If Step 3 failed, do nothing for five minutes. The timer restores the previous ruleset.
+
+**Check:** `systemctl list-timers fw-rollback --all` on the Pi lists nothing.
 
 ---
 
-## Adding a routed flow through the tunnel
+## Changing the admin desktop's address
 
-The host routes narrowly-scoped flows to other DMZ hosts rather than standing up a
-second VPN endpoint. Controlled entirely by `nft_forward_allow` in `vars.yml`.
+SSH is admitted from `ssh_admin_sources`: `10.10.10.0/24` (MGMT) and `10.10.20.10/32` (the
+desktop, pinned by an OPNsense static mapping on MAIN). If the desktop's address changes,
+SSH from the desk stops. `fail2ban` ignores the same list.
 
-Add an entry with `name`, `dest`, and `port`. The same variable drives both the
-firewall rules and `net.ipv4.ip_forward`, so the sysctl and the ruleset cannot
-disagree — an empty list sets forwarding back to `0`.
+### Step 1. Add the new address alongside the old one
 
-Apply with the firewall dead-man switch armed (above), then verify from a VPN client
-that the intended flow works and the unintended ones do not:
+Edit `ssh_admin_sources` in `vars.yml` to hold both. Apply from the old address with the
+firewall procedure above, then `--tags fail2ban`.
+
+**Check:** `sudo nft list chain inet filter input` on the Pi shows both addresses in the SSH
+rule.
+
+### Step 2. Move the desktop
+
+Change the OPNsense static mapping, then renew the lease (`ipconfig /renew`).
+
+**Check:** `ipconfig` shows the new address, and `ssh justin@10.10.40.10 hostname` works
+from WSL.
+
+### Step 3. Remove the old address
+
+Edit `vars.yml`, apply the firewall and fail2ban roles again.
+
+**Check:** the SSH rule lists only the new address and `10.10.10.0/24`.
+
+---
+
+## Changing `ssh_port`
+
+Avoid it. Port 22 was chosen on purpose (DR-003 11.4). If it has to change:
+
+### Step 1. Add the new port to the OPNsense MGMT to DMZ rule first
+
+**Check:** the rule in OPNsense shows the new port, applied.
+
+### Step 2. Apply the `ssh` role alone
 
 ```bash
-ssh justin@<dest>                              # should succeed
-ping -c2 -W2 192.168.50.1                      # must fail
-nmap -Pn -p 80,443 <dest>                      # must find nothing
+ansible-playbook site.yml --tags ssh -e ansible_port=22
 ```
 
-Run the scans from your **workstation**, not the server. Scanning from inside the DMZ
-tests the wrong direction, and it means keeping scanning tools on an internet-facing
-host for no benefit.
+Handlers run at the end of a play. Running `ssh` alone makes its restart happen before the
+firewall changes. If both change in one run and a task fails in between, the firewall
+demands one port while sshd listens on another.
+
+**Check:** `ssh -t justin@10.10.40.10 'sudo ss -tlnp | grep sshd'` shows the new port. Trust
+the socket, not `sshd -T`.
+
+### Step 3. Apply the firewall with the dead-man switch, then update the inventory
+
+**Check:** a new session on the new port works.
+
+---
+
+## Replacing the origin certificate
+
+The current Cloudflare Origin CA certificate expires **2041-09-25**. Replace it before then,
+or immediately if the key is ever exposed.
+
+### Step 1. Create the certificate
+
+**Run on: WORKSTATION**, Cloudflare dashboard: `justingarter.com` > **SSL/TLS** >
+**Origin Server** > **Create Certificate**. Private key type ECC, hostnames
+`justingarter.com` and `*.justingarter.com`, validity 15 years.
+
+Leave this page open until Step 4 passes. **Cloudflare shows the private key once.**
+
+**Check:** the page shows both an Origin Certificate block and a Private Key block.
+
+### Step 2. Save both to the WSL home directory, not the repo
+
+**Run on: CONTROL NODE**
+
+```bash
+cd ~
+install -m 600 /dev/null origin.key && nano origin.key    # paste the private key, save
+nano origin.pem                                            # paste the certificate, save
+head -1 origin.pem origin.key; wc -l origin.pem origin.key
+```
+
+The key stays outside the repo so its plaintext never exists in the working tree.
+
+**Check:** each file's first line is its `-----BEGIN ...-----` line alone, and each file has
+more than three lines. If either file is one long line, do Step 3. Otherwise skip to Step 4.
+
+### Step 3. Re-wrap a collapsed PEM (only if Step 2 failed)
+
+On 2026-09-29 the paste from the browser into nano collapsed both files onto one line.
+OpenSSL and Caddy cannot load that.
+
+```bash
+rewrap() {
+  local f=$1 label body
+  label=$(grep -o -- '-----BEGIN [A-Z ]*-----' "$f" | head -1 | sed 's/-----BEGIN //; s/-----$//')
+  [ -n "$label" ] || { echo "no BEGIN line in $f"; return 1; }
+  body=$(tr -d '\r\n' < "$f" | sed "s/-----BEGIN $label-----//; s/-----END $label-----//" | tr -d ' ')
+  ( umask 077; { echo "-----BEGIN $label-----"; echo "$body" | fold -w 64; echo "-----END $label-----"; } > "$f.tmp" ) && mv "$f.tmp" "$f"
+}
+rewrap ~/origin.pem
+rewrap ~/origin.key
+head -2 ~/origin.pem ~/origin.key
+```
+
+**Check:** each file now starts with the `BEGIN` line, then a 64-character base64 line.
+
+### Step 4. Prove the certificate and key match
+
+```bash
+cd ~
+EMPTY=$(printf '' | sha256sum | cut -d' ' -f1)
+c=$(openssl x509 -in origin.pem -noout -pubkey 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+k=$(openssl pkey -in origin.key -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+[ "$c" = "$k" ] && [ "$c" != "$EMPTY" ] && echo MATCH || echo "FAIL: mismatch or unreadable"
+openssl x509 -in origin.pem -noout -enddate -ext subjectAltName
+```
+
+If either file fails to parse, both pipelines hash empty input and a plain equality test
+passes. The `EMPTY` guard makes it fail.
+
+**Check:** `MATCH`, the new expiry date, and both hostnames in the SAN.
+
+### Step 5. Put them in the repo
+
+```bash
+cd /mnt/c/Projects/_Complete/pi-webserver-ansible
+cp ~/origin.pem roles/caddy/files/origin.pem
+ansible-vault encrypt ~/origin.key --output roles/caddy/files/origin.key.vault
+head -1 roles/caddy/files/origin.key.vault
+```
+
+At the `New Vault password` prompt, enter the **existing** vault password. A different one
+leaves the playbook unable to decrypt the key with its single vault prompt.
+
+Then rerun the check from [Rebuild from scratch, Step 7](rebuild-from-scratch.md#step-7-confirm-the-origin-certificate-in-the-repo-is-good)
+against the repo copies.
+
+**Check:** `$ANSIBLE_VAULT;1.1;AES256`, and the repo check prints `MATCH`.
+
+### Step 6. Remove the plaintext copies
+
+```bash
+shred -u ~/origin.key ~/origin.pem
+ls ~/origin.* 2>/dev/null || echo removed
+```
+
+**Check:** prints `removed`.
+
+### Step 7. Deploy and verify
+
+```bash
+ansible-playbook site.yml --tags caddy
+ssh justin@10.10.40.10 'openssl x509 -in /etc/caddy/tls/origin.pem -noout -enddate'
+```
+
+```powershell
+curl.exe -s -o NUL -w "status=%{http_code}`n" https://justingarter.com/
+```
+
+**Check:** the Pi reports the new expiry, and the site returns `status=200` from outside.
+
+### Step 8. Close out
+
+Revoke the old certificate in the same Cloudflare page. Update the expiry in
+[Runbook](runbook.md) section 9 and in the `vars.yml` comment. Commit.
+
+**Check:** Cloudflare lists one active origin certificate.
 
 ---
 
 ## Changing a secret
 
-The vault holds two: `wg_private_key` and `ddns_api_token`.
+The vault, `group_vars/webserver/vault.yml`, holds one secret: `ddns_api_token`. The origin
+key is its own vaulted file (above).
+
+### Step 1. Rotate at the source
+
+Cloudflare dashboard > **My Profile** > **API Tokens**. Scope: Zone > DNS > Edit,
+`justingarter.com` only.
+
+**Check:** the new token's **Verify** test passes in the dashboard.
+
+### Step 2. Update the vault and apply
 
 ```bash
-# CONTROL NODE
 ansible-vault edit group_vars/webserver/vault.yml
-ansible-playbook -i inventory site.yml --check --diff --ask-vault-pass
+head -1 group_vars/webserver/vault.yml
+ansible-playbook site.yml --tags ddns
 ```
 
-**Never run `--diff` on a task that renders a secret.** That is how the WireGuard server
-key was exposed and had to be rotated. Tasks that template secrets carry `no_log: true`;
-if you add one, add the flag.
+Never use `--diff` on a task that renders a secret. Those tasks carry `no_log: true`; any new
+one needs it too. The August 2026 WireGuard key was exposed by exactly this.
 
-Confirm the file is still encrypted before pushing:
+**Check:** the header reads `$ANSIBLE_VAULT;1.1;AES256`, and the run is `failed=0`.
+
+### Step 3. Force a DDNS run and read the result
 
 ```bash
-head -1 group_vars/webserver/vault.yml    # must read $ANSIBLE_VAULT;1.1;AES256
+ssh -t justin@10.10.40.10 'sudo rm -f /var/lib/cloudflare-ddns/last_ip && sudo systemctl start cloudflare-ddns.service && sudo journalctl -u cloudflare-ddns -n 5 --no-pager'
 ```
 
-For the Cloudflare token, rotate at the Cloudflare dashboard first (scope: Zone → DNS →
-Edit, restricted to this zone), update the vault, apply, then force a DDNS run and
-watch it succeed:
+Deleting `last_ip` forces a real API write instead of `IP unchanged, skipping`.
+
+**Check:** `Successfully updated justingarter.com`. Then revoke the old token.
+
+---
+
+## Adding a DNS record to DDNS
+
+For `origin.justingarter.com` when Minecraft exists (DR-003 11.5). Not before: a DNS-only
+record publishes the home IP.
+
+### Step 1. Create the record in Cloudflare
+
+A record, DNS only, TTL 1 minute, any placeholder address. The updater edits records and
+never creates them.
+
+**Check:** the record exists with a grey cloud.
+
+### Step 2. Add it to `ddns_records` in `vars.yml` and apply `--tags ddns`
+
+**Check:** a forced run (previous section, Step 3) logs a success line for each record.
+
+---
+
+## Updating Caddy
+
+Caddy comes from the Cloudsmith repo. unattended-upgrades installs only Debian origins, so
+Caddy never updates on its own.
+
+### Step 1. Read the release notes for every version between current and target
+
+**Check:** no breaking Caddyfile changes, or you have the template change ready.
+
+### Step 2. Upgrade
 
 ```bash
-# SERVER
-sudo systemctl start cloudflare-ddns.service
-sudo journalctl -u cloudflare-ddns -n 10 --no-pager
+ssh -t justin@10.10.40.10 'caddy version; sudo apt update && sudo apt install --only-upgrade caddy && caddy version && systemctl is-active caddy'
 ```
+
+**Check:** the new version prints and Caddy is `active`.
+
+### Step 3. Verify the site
+
+Run Step 4 and Step 6 of [Deploy site content](deploy-site-content.md).
+
+**Check:** `status=200` locally and from outside.
+
+---
+
+## Refreshing the Cloudflare trusted-proxy list
+
+`caddy_trusted_proxies` is a static snapshot. If Cloudflare adds a range, visitors arriving
+through it are logged with a Cloudflare address as `client_ip`. OPNsense's `CLOUDFLARE_V4`
+alias refreshes itself daily; this list does not.
+
+### Step 1. Compare
+
+```bash
+curl -s https://www.cloudflare.com/ips-v4 | sort > /tmp/cf.txt
+grep -oE '[0-9.]+/[0-9]+' group_vars/webserver/vars.yml | sort > /tmp/ours.txt
+diff /tmp/cf.txt /tmp/ours.txt && echo "no change"
+```
+
+The second `grep` also catches `ssh_admin_sources`; ignore `10.10.x` lines in the diff.
+
+**Check:** `no change`, or a list of ranges to add or remove.
+
+### Step 2. Update `vars.yml` and apply `--tags caddy` through the normal loop
+
+**Check:** the access log shows visitor addresses, not Cloudflare's, in `client_ip`. See
+[Routine checks](routine-checks.md#visitor-ips).
+
+IPv6 ranges are deliberately absent. The origin has no AAAA record, so Cloudflare connects
+over IPv4. Add them before publishing an AAAA record, not after.
 
 ---
 

@@ -1,308 +1,203 @@
 # Routine checks
 
-Confirming the host is healthy and actually doing what it claims. Nothing here changes
-state, so all of it is safe to run any time.
+Confirming the Pi is healthy and doing what the docs claim. Nothing here changes state
+except the fail2ban test ban, which removes itself.
 
-The organising principle: **a config file describes intent, querying a running service
-describes reality, and attempting the thing describes truth.** Those three answers are
-not always the same, and this page prefers the third wherever it can get it.
+A config file is intent. A running service's report is reality. Attempting the thing is
+truth. This page prefers the third.
+
+All commands run on the **CONTROL NODE** (WSL) with the agent loaded, unless marked
+otherwise. `P` below means `ssh -t justin@10.10.40.10`, so set it once per window:
+
+```bash
+P="ssh -t justin@10.10.40.10"
+```
 
 ---
 
 ## Sixty-second health check
 
-**Run on: SERVER**
-
 ```bash
-systemctl is-active caddy nftables wg-quick@wg0 fail2ban ssh cloudflare-ddns.timer
-ip -br a
-vcgencmd measure_temp; vcgencmd get_throttled
-df -h / | tail -1
-uptime
+$P 'systemctl is-active caddy nftables fail2ban ssh cloudflare-ddns.timer pi-thermal.timer; ip -br a; nmcli -t -f NAME,DEVICE con show; vcgencmd measure_temp; vcgencmd get_throttled; df -h / | tail -1; uptime'
 ```
 
-| Want | Meaning if wrong |
+**Check:**
+
+| Want | If wrong |
 |---|---|
-| six × `active` | A dead service. `journalctl -u <name> -b --no-pager \| tail -30` |
-| `lo`, `eth0`, `wg0` only | An extra interface means the host is no longer single-homed |
-| under 50 °C idle | Check the fan; see thermal below |
-| `throttled=0x0` | Bits 16–19 are sticky since boot, not current state — decode before panicking |
-| root well under 50% | The access log grows; check `/var/log/caddy` |
+| six `active` | `sudo journalctl -u <name> -b --no-pager \| tail -30` |
+| interfaces `lo` and `eth0` only, `eth0` on `10.10.40.10/24` | Anything else means the Pi is no longer single-homed |
+| profiles `dmz:eth0` and `lo:lo` only | A second Ethernet profile can win at next boot. Rerun the playbook |
+| under 50 C idle | See Thermal |
+| `throttled=0x0` | Bits 16 to 19 are sticky since boot. Decode before acting ([Runbook](runbook.md) section 12) |
+| root well under 50% | Check `/var/log/caddy` |
 
 ---
 
-## Is the site actually serving?
-
-**Run on: SERVER**
+## Is the site serving?
 
 ```bash
-curl -s -o /dev/null -w 'status=%{http_code} bytes=%{size_download}\n' \
-  --resolve justingarter.com:443:127.0.0.1 https://justingarter.com/
+$P "curl -sk -o /dev/null -w 'status=%{http_code}\n' --resolve justingarter.com:443:127.0.0.1 https://justingarter.com/"
 ```
-
-`--resolve` forces the hostname to loopback while presenting the correct SNI, so Caddy
-serves the real certificate. Without it you get a TLS handshake failure, because there
-is no certificate for `127.0.0.1` — and that failure looks like a server problem when
-it is a client one.
 
 **Run on: WORKSTATION**
 
 ```powershell
-curl.exe -s -o NUL -w "status=%{http_code} bytes=%{size_download}`n" https://justingarter.com/
+curl.exe -s -o NUL -w "status=%{http_code}`n" https://justingarter.com/
 ```
 
-Local 200 plus external failure means DNS, Cloudflare, or your public IP — not the
-server.
+`-k` on the Pi is required: the Origin CA certificate is trusted by Cloudflare only.
+
+**Check:** both print `status=200`. Local 200 with outside failure means the ingress path,
+not the Pi: [Recovery](recovery.md).
+
+---
+
+## Is the origin reachable only through Cloudflare?
+
+**Run on:** a phone on cellular, Wi-Fi off. Find the home IP first with
+`$P 'curl -s -4 https://ifconfig.me; echo'`.
+
+- `https://justingarter.com` loads with a valid padlock.
+- `https://<home IP>` times out.
+
+**Check:** both as listed. A response from the direct IP means OPNsense's `CLOUDFLARE_V4`
+source restriction is gone (`opnsense-vm.md` 5.5).
 
 ---
 
 ## Is SSH really key-only?
 
-The config says so. That is not the same as it being true — the predecessor host ran
-with password auth enabled for months while its documentation claimed otherwise.
+Config, then runtime, then behaviour.
 
-**Config, then runtime, then behaviour:**
-
-**Run on: SERVER**
 ```bash
-sudo sshd -T | grep -iE '^(port|permitrootlogin|passwordauthentication|kbdinteractiveauthentication) '
-sudo ss -tlnp | grep sshd
+$P "sudo sshd -T | grep -iE '^(port|permitrootlogin|passwordauthentication|kbdinteractiveauthentication) '; sudo ss -tlnp | grep sshd"
+ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 justin@10.10.40.10
 ```
 
-`sshd -T` reports *parsed configuration* — what sshd would do on next start. `ss -tlnp`
-reports what the running process is bound to. They can disagree, and when they do it
-is usually because a config was written and the daemon never restarted.
+`sshd -T` is parsed config, what sshd would do on next start. `ss` is what the running
+daemon is bound to. Only the login attempt proves behaviour.
 
-**Run on: WORKSTATION** — the only test that proves anything:
-```powershell
-ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 justin@192.168.54.180 -p 2222
-```
-
-Want `Permission denied (publickey)` **with no password prompt**. A prompt means the
-server is accepting password auth regardless of what any file claims.
+**Check:** `port 22`, `permitrootlogin no`, both auth lines `no`; sshd listening on 22; the
+login attempt ends with `Permission denied (publickey)` and **no password prompt**.
 
 ---
 
-## Is the segmentation still holding?
+## Is SSH limited to the two admin sources?
 
-The claim is that the DMZ and the trusted LAN cannot reach each other. Test both
-directions; a rule can be removed from one side without the other noticing.
-
-**Run on: SERVER** — DMZ → LAN, the direction that matters most:
 ```bash
-ping -c2 -W2 192.168.50.1
-```
-**Must time out.** A reply means the segmentation is open and the host has become a
-potential pivot into your trusted network.
-
-**Run on: WORKSTATION** — LAN → DMZ, with **WireGuard deactivated**:
-```powershell
-ping -n 2 192.168.54.180
-Test-NetConnection 192.168.54.180 -Port 2222
-```
-Both must fail. If the tunnel is up, all `192.168.54.x` traffic goes through it and you
-are testing nothing.
-
-Then reactivate WireGuard and confirm the legitimate path works:
-```powershell
-ssh WebServer 'hostname'
+$P 'sudo nft list chain inet filter input | grep -i ssh'
 ```
 
-Run this trio after any router change, and always after closing a temporary rule.
+**Check:** one rule: `ip saddr { 10.10.10.0/24, 10.10.20.10 } tcp dport 22 accept`.
 
 ---
 
-## Is fail2ban actually enforcing?
+## Is the DMZ still contained?
 
-Two jails should be loaded, and a ban should reach the kernel.
-
-**Run on: SERVER**
-```bash
-sudo fail2ban-client status
-sudo fail2ban-client status caddy-404
-sudo nft list tables
-```
-
-**`f2b-table` will not exist on a freshly booted host with zero bans.** The table, set,
-and chain are created lazily at the *first ban*, not at service start. So `nft list
-tables` showing only `inet filter` while `fail2ban-client status` reports both jails is
-**normal**, not broken. Do not diff a freshly booted ruleset against a snapshot from a
-long-uptime host and conclude something is wrong.
-
-To tell "not created yet" from "genuinely broken", force a ban and watch it appear:
+The Pi must reach the internet and nothing private. OPNsense enforces this (DMZ rules pass
+DNS to `10.10.40.1` and `!PRIVATE_NETS` only).
 
 ```bash
-sudo fail2ban-client set caddy-404 banip 198.51.100.42     # TEST-NET-2, safe
-sudo nft list table inet f2b-table
-sudo fail2ban-client set caddy-404 unbanip 198.51.100.42
+$P 'ping -c2 -W2 10.10.20.10; ping -c2 -W2 10.10.10.5; ping -c2 -W2 192.168.0.1; curl -s -o /dev/null -w "internet %{http_code}\n" https://1.1.1.1; getent hosts cloudflare.com'
 ```
 
-The rule appearing in the ruleset is the proof. `fail2ban-client` reporting a ban is
-not — that is the exact failure mode a wrong `banaction` produces, where every jail
-looks healthy and bans nothing.
+**Check:** all three pings fail (100% packet loss), `internet 200` or `301`, and
+`cloudflare.com` resolves. A ping reply means the Pi has become a pivot into the lab or
+ROOM_NET.
 
 ---
 
-## Are visitor IPs resolving correctly?
+## Is forwarding off?
 
-If `trusted_proxies` is wrong, every log entry records a Cloudflare edge address
-instead of the visitor — and the `caddy-404` jail starts banning Cloudflare.
-
-**Run on: SERVER**
 ```bash
-sudo tail -5 /var/log/caddy/access.log | jq -r '[.request.remote_ip, .request.client_ip, .status] | @tsv'
+$P 'sysctl net.ipv4.ip_forward; sudo nft list chain inet filter forward'
 ```
 
-`remote_ip` should be a Cloudflare address; `client_ip` should be a plausible visitor.
-If both are Cloudflare, the trusted-proxy list needs refreshing —
-see [Making changes](making-changes.md).
+**Check:** `= 0`, and the forward chain is empty with `policy drop`.
+
+---
+
+## Is fail2ban enforcing?
+
+```bash
+$P 'sudo fail2ban-client status; sudo fail2ban-client set sshd banip 203.0.113.55; sudo nft list table inet f2b-table; sudo fail2ban-client set sshd unbanip 203.0.113.55'
+```
+
+`203.0.113.55` is TEST-NET-3, safe to ban. The `f2b-table` is created lazily at the first
+ban, so its absence on a freshly booted Pi with no bans is normal. The ban appearing in the
+kernel ruleset is the proof. `fail2ban-client` reporting a ban is not; that is what a wrong
+`banaction` looks like.
+
+**Check:** jails `sshd` and `caddy-404` listed; the test address appears in `f2b-table`.
+
+**Known limitation:** `caddy-404` detects but cannot block. It bans the visitor address from
+`CF-Connecting-IP`, but every packet reaching the Pi comes from a Cloudflare address, so the
+ban never matches. Blocking moves to Cloudflare with the traffic dashboard (DR-003 11.8).
+
+---
+
+## Visitor IPs
+
+```bash
+$P "sudo tail -5 /var/log/caddy/access.log | jq -r '[.request.remote_ip, .request.client_ip, .status] | @tsv'"
+```
+
+**Check:** `remote_ip` is a Cloudflare address and `client_ip` is a plausible visitor. Both
+Cloudflare means `trusted_proxies` needs a refresh: [Making changes](making-changes.md#refreshing-the-cloudflare-trusted-proxy-list).
 
 ---
 
 ## Is DDNS keeping up?
 
-**Run on: SERVER**
 ```bash
-systemctl list-timers cloudflare-ddns --all --no-pager
-sudo journalctl -u cloudflare-ddns -b --no-pager | tail -10
-curl -s https://api.ipify.org; echo
+$P 'systemctl list-timers cloudflare-ddns --all --no-pager; sudo journalctl -u cloudflare-ddns --no-pager | tail -5; curl -s -4 https://ifconfig.me; echo'
 ```
 
-The timer runs every five minutes, so the worst case after an address change is five
-minutes of stale DNS. Log lines read either `IP unchanged (x.x.x.x), skipping.` or
-`IP changed from … updating Cloudflare…` followed by one success line per record.
+The journal is in RAM, so history starts at the last boot.
 
-Both `justingarter.com` and `vpn.justingarter.com` must update. The `vpn` record is
-what your tunnel endpoint resolves to; if it stops updating, remote access breaks the
-next time your ISP renumbers you.
+**Check:** the timer's next run is under five minutes away, the last lines read
+`IP unchanged (<ip>), skipping.` or a success line, and that IP matches `ifconfig.me`.
 
 ---
 
-## Certificates
+## Certificate
 
-**Run on: SERVER**
 ```bash
-sudo ls -la /var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/*/
-sudo journalctl -u caddy -b --no-pager | grep -iE 'certificate|obtain|renew' | tail -10
+$P 'openssl x509 -in /etc/caddy/tls/origin.pem -noout -enddate; sudo stat -c "%U:%G %a %n" /etc/caddy/tls/*'
 ```
 
-Routine operation shows `got renewal info` lines. `certificate obtained successfully`
-means a *new* certificate was issued — expected after a rebuild, unexpected otherwise,
-and worth investigating since Let's Encrypt allows only five duplicates per week.
+**Check:** `notAfter=Sep 25 ... 2041 GMT`; `origin.pem` is `root:caddy 644`; `origin.key` is
+`root:caddy 640`.
+
+---
+
+## microSD wear settings
+
+```bash
+$P 'findmnt -no OPTIONS /; journalctl --header | grep -i "file path"; swapon --show'
+```
+
+**Check:** root options include `noatime` and `commit=600`; the journal path is under
+`/run/log/journal` (RAM); swap shows `/dev/zram0` at priority 100 and `/swapfile` 512M at
+priority -10.
 
 ---
 
 ## Thermal
 
-**Run on: SERVER**
 ```bash
-vcgencmd measure_temp
-cat /sys/devices/platform/cooling_fan/hwmon/hwmon*/fan1_input
-tail -5 /var/log/pi-thermal.log
-vcgencmd get_throttled
+$P 'vcgencmd measure_temp; vcgencmd get_throttled; tail -5 /var/log/pi-thermal.log'
 ```
 
-**`fan1_input` reading 0 at idle is expected**, not a dead fan. The Pi 5 fan curve does
-not spin up until roughly 50 °C. The only way to confirm the fan works is to drive the
-SoC past that and watch the RPM go nonzero — the load test below does it.
-
-Reference figures with the active cooler fitted: idle 34 °C, peak 64.2 °C under
-sustained synthetic load, no throttle bits. Before the cooler, the same load reached
-84.5 °C with throttling triggered.
-
-Decoding `get_throttled`: bits 0–3 are *current* state, bits 16–19 are *sticky since
-boot*. `0xe0000` means things happened at some point, nothing is happening now. Only a
-reboot clears the sticky bits.
+**Check:** idle temperature in the 30s or 40s, `throttled=0x0`, and an hourly log line in
+the last hour.
 
 ---
 
-## Load test
+## After any change to OPNsense, the Archer or the switch
 
-Only when you want a number — this saturates the host for the duration.
+Run, in this order: the site checks, the Cloudflare-only check, the SSH source check, and
+the containment check.
 
-**Run on: SERVER**
-
-`wrk` cannot be pointed at loopback directly, because it takes SNI from the URL and
-Caddy has no certificate for `127.0.0.1`. Add a temporary hosts entry so the name, SNI,
-and destination all agree:
-
-```bash
-echo '127.0.0.1 justingarter.com' | sudo tee -a /etc/hosts
-
-# validate ONE request before spending two minutes measuring a million
-curl -s -o /dev/null -w 'status=%{http_code} bytes=%{size_download}\n' https://justingarter.com/
-```
-
-Only if that returns `200` with a real byte count:
-
-```bash
-wrk -t4 -c100 -d120s https://justingarter.com/
-```
-
-Watch conntrack in a second session. It should sit near your connection count:
-
-```bash
-watch -n2 'cat /proc/sys/net/netfilter/nf_conntrack_count'
-```
-
-**Always remove the hosts entry afterwards** — leaving it means the host resolves its
-own domain to itself, which quietly breaks anything that later tries to reach the
-public site from the Pi:
-
-```bash
-sudo sed -i '/justingarter.com/d' /etc/hosts
-grep justingarter /etc/hosts || echo "reverted"
-```
-
-### Why the test fails if you improvise
-
-Two traps, both of which produce *misleading* output rather than an obvious error:
-
-**Never benchmark plain HTTP on port 80.** Caddy answers with a 308 redirect carrying
-`Connection: close`, so `wrk` opens a fresh TCP connection per request instead of
-reusing a hundred. At ~11k requests/second each leaves a conntrack entry in TIME_WAIT,
-and `nf_conntrack_max` on this host is 8192 — exhausted in under a second. After that
-the kernel drops new SYNs *before* nftables evaluates them, so the firewall's drop
-counter stays at zero, `wrk` reports no socket errors, and the summary shows a healthy
-per-thread rate beside a total two orders of magnitude too low. The only direct
-evidence is `dmesg`:
-
-```bash
-sudo dmesg -T | grep -i conntrack | tail -3
-```
-
-8192 is fine for real Cloudflare-proxied traffic and has never been approached in
-production. It is only a ceiling under connection-churning synthetic load. Fix the
-test, not the limit.
-
-**`-H 'Host: …'` is not the same as SNI.** Setting the Host header while connecting to
-`https://127.0.0.1/` sends SNI `127.0.0.1`, every handshake fails, and you get zero
-requests with tens of thousands of connect errors — which reads like a server fault and
-is a client misconfiguration.
-
-Reference figures: 11,952 req/s at 133 MB/s, `-t4 -c100 -d120s`, peak 64.2 °C, no
-throttling. Measured over loopback with the generator sharing the host's four cores, so
-it describes what Caddy and the CPU can do rather than what the network path can carry.
-
----
-
-## Full state capture
-
-For comparing against a known-good snapshot, or before making significant changes.
-
-**Run on: SERVER**
-```bash
-mkdir -p ~/state-$(date +%Y%m%d) && cd ~/state-$(date +%Y%m%d)
-dpkg-query -W -f='${Package} ${Version}\n' | sort > packages.txt
-systemctl list-unit-files --state=enabled --no-pager | sort > units-enabled.txt
-sudo nft list ruleset > nft.txt
-ss -tulpn 2>/dev/null | sort > listening.txt
-sudo sysctl -a 2>/dev/null | sort > sysctl.txt
-wc -l *.txt
-```
-
-When diffing two captures, expect noise in `sysctl.txt` — a dozen or so keys are
-memory-autotuned or per-boot (`kernel.random.uuid`, `fs.epoll.max_user_watches`,
-`tcp_mem`, live conntrack count) and differ every time regardless of configuration.
-The values that matter are the ones the playbook sets, `net.ipv4.ip_forward` chief
-among them.
+**Check:** all four pass.

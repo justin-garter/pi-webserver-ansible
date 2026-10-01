@@ -1,45 +1,101 @@
 # JG-RPi-WebServer
 
-Everything needed to build, operate, and recover the self-hosted web server behind
-[justingarter.com](https://justingarter.com) — an internet-facing static site on a
-Raspberry Pi 5, single-homed in a DMZ VLAN, fronted by Cloudflare, and reachable for
-management only over WireGuard.
+Ansible playbook and operating docs for the Raspberry Pi that serves
+[justingarter.com](https://justingarter.com): a static site on a Pi 5, single-homed in the
+DMZ (VLAN 40) behind OPNsense, reachable from the internet only through Cloudflare on 443.
 
-This repo holds both halves: the Ansible playbook that configures the host, and the
-operational documentation for running it. The playbook is the *what*, executable.
-[`docs/runbook.md`](docs/runbook.md) is the *why*.
+The playbook is the *what*. [`docs/runbook.md`](docs/runbook.md) is the *why*.
 
 ---
 
 ## Common tasks
 
-Start here. Each page is written to be followed without prior context, with every
-command labelled by which machine it runs on.
-
-| I need to… | Page |
+| I need to | Page |
 |---|---|
 | Put new site content on the server | [Deploy site content](docs/deploy-site-content.md) |
-| Rebuild the host from a blank disk | [Rebuild from scratch](docs/rebuild-from-scratch.md) |
-| Check the host is healthy and doing what it claims | [Routine checks](docs/routine-checks.md) |
-| Change firewall rules, add a VPN peer, update Caddy | [Making changes](docs/making-changes.md) |
-| Get back in after locking myself out | [Recovery](docs/recovery.md) |
+| Build the Pi from a blank card | [Rebuild from scratch](docs/rebuild-from-scratch.md) |
+| Check the Pi is healthy and doing what it claims | [Routine checks](docs/routine-checks.md) |
+| Change config, firewall, SSH sources, certificate, secrets | [Making changes](docs/making-changes.md) |
+| Get the site or SSH back | [Recovery](docs/recovery.md) |
 | Look up how something is configured and why | [Runbook](docs/runbook.md) |
 
 ---
 
 ## The three machines
 
-Nearly every mistake on this system comes from running a command on the wrong box.
-The docs label every block. The three are:
+Every procedure labels which machine each command runs on.
 
 | Label | What it is | How you get there |
 |---|---|---|
-| **WORKSTATION** | Windows desktop. WireGuard client, SSH client, Raspberry Pi Imager, router admin. | It's the machine in front of you. |
-| **CONTROL NODE** | WSL2 Ubuntu on the same desktop. Holds this repo and runs Ansible. | `wsl` from PowerShell |
-| **SERVER** | The Pi itself, `JG-RPi-WebServer`. | `ssh WebServer` — requires the tunnel up |
+| **WORKSTATION** | Windows desktop on MAIN, `10.10.20.10`. Git, Imager, browser | The machine in front of you |
+| **CONTROL NODE** | WSL2 on the same desktop. Runs Ansible | `wsl`, then `cd /mnt/c/Projects/_Complete/pi-webserver-ansible` |
+| **SERVER** | The Pi, `JG-RPi-WebServer`, `10.10.40.10` | `ssh justin@10.10.40.10` from WSL, `ssh WebServer` from PowerShell, or the console |
 
-Ansible does not run natively on Windows, which is why the control node exists as a
-separate thing rather than being the workstation.
+---
+
+## Control node setup
+
+### Step 1. Mount `/mnt/c` with Unix permissions
+
+`/etc/wsl.conf`:
+
+```ini
+[automount]
+options = "metadata,umask=22,fmask=11"
+```
+
+Then `wsl --shutdown` from PowerShell and reopen WSL. Without `metadata`, every file under
+`/mnt/c` is mode 777, and Ansible ignores a world-writable `ansible.cfg`: no inventory
+default, no vault prompt, no become prompt.
+
+**Check:** `ansible --version | grep 'config file'` shows this repo's `ansible.cfg`.
+
+### Step 2. Install Ansible and the collections
+
+Ansible is installed system-wide in WSL (apt or pipx), not in a venv.
+
+```bash
+ansible-galaxy collection install -r requirements.yml
+```
+
+**Check:** `ansible-galaxy collection list | grep -E 'ansible.posix|community.general'` shows
+both.
+
+### Step 3. Load the SSH key, once per WSL window
+
+```bash
+eval "$(ssh-agent -s)" && ssh-add /mnt/c/Users/garte/.ssh/id_ed25519
+```
+
+**Check:** `ssh-add -l` lists one ED25519 key.
+
+### Step 4. Confirm the inventory resolves
+
+```bash
+ansible-inventory --graph
+```
+
+**Check:** `webserver` contains `jg-rpi-webserver`.
+
+---
+
+## Running
+
+```bash
+ansible-playbook site.yml --check --diff   # dry run against a converged host
+ansible-playbook site.yml                  # apply
+ansible-playbook site.yml --tags caddy     # one role
+```
+
+Every run prompts twice: `BECOME password` (the `justin` password; sudo keeps its password,
+DR-003 11.6) then `Vault password`. Both are in the password manager. Runs are manual and
+never scheduled.
+
+Tags: `base`, `ssh`, `nftables`/`firewall`, `caddy`/`web`, `fail2ban`/`security`,
+`ddns`/`dns`, `monitoring`.
+
+A converged host reports `changed=0`. Anything else on a host you have not touched is drift
+or a role defect.
 
 ---
 
@@ -47,230 +103,90 @@ separate thing rather than being the workstation.
 
 | Role | Result |
 |---|---|
-| `base` | Hostname, timezone, packages, cloud-init disabled, radios disabled at firmware, NVMe swapfile below zram in priority, unattended-upgrades |
-| `ssh` | Key-only auth on 2222 via a `00-` drop-in that wins over cloud-init's, then asserts the *effective* config matches |
-| `wireguard` | `wg0` at `10.10.10.1/24` — the only management path into the DMZ |
-| `nftables` | Default-deny inbound. 80/443 public, 51820 for the tunnel, SSH restricted to `wg0` |
-| `caddy` | Caddy from the Cloudsmith repo, Cloudflare `trusted_proxies`, six security headers, JSON access log, memory ceilings |
-| `fail2ban` | nftables ban backend, `sshd` and `caddy-404` jails |
-| `ddns` | Cloudflare DDNS on a 5-minute systemd timer, preserving each record's proxied flag |
-| `monitoring` | Hourly thermal and throttle logging |
+| `base` | Refuses to run without a console password (R13). Asserts the host is on `10.10.40.10`, owns it with one NetworkManager profile `dmz`. Hostname, timezone, packages, cloud-init off, seed files deleted, radios off in firmware, root `noatime,commit=600`, journal in RAM, 512 MB swapfile below zram, unattended-upgrades |
+| `ssh` | Key-only on 22 via a `00-` drop-in, asserted against `sshd -T` |
+| `nftables` | Default-deny inbound. 443 from any (OPNsense limits it to Cloudflare), SSH from `10.10.10.0/24` and `10.10.20.10` only, no forwarding |
+| `caddy` | Caddy from Cloudsmith, Cloudflare Origin CA certificate, 443 only, extensionless URLs, `trusted_proxies`, security headers, JSON access log, memory limits |
+| `fail2ban` | nftables ban action, `sshd` and `caddy-404` jails |
+| `ddns` | Cloudflare DDNS for the apex every 5 minutes, preserving each record's proxied flag |
+| `monitoring` | Hourly thermal and throttle log |
 
-**Site content is not deployed by this playbook.** Host configuration and content
-deploys are separate changes on purpose — when the site breaks you want one variable
-to check, not two. See [Deploy site content](docs/deploy-site-content.md).
+**Site content is not deployed by the playbook.** Config and content are separate changes so
+a broken site has one variable to check. See [Deploy site content](docs/deploy-site-content.md).
 
 ---
 
-## What the playbook does *not* do
+## What the playbook does not do
 
-Learned the hard way by wiping the disk and rebuilding from it in August 2026. The
-playbook configures a host that is already reachable. It does not create the
-conditions that make it reachable.
+It configures a Pi that is already reachable. Before the first run, the card needs, by hand
+(all in [Rebuild from scratch](docs/rebuild-from-scratch.md)):
 
-Before the first run, a bare host needs, by hand:
+1. User `justin` with a password and the SSH public key (Imager).
+2. sshd enabled (Imager).
+3. The address `10.10.40.10/24` seeded in `network-config` on the boot partition. The DMZ
+   has no DHCP.
+4. Console login verified at the physical console.
 
-1. A user account matching `ansible_user` in the inventory
-2. That user's SSH public key in `~/.ssh/authorized_keys`
-3. Passwordless sudo for that user
-4. `sshd` enabled and running
-5. A static IP address on the DMZ segment
-
-None of the five are established by any role. Full procedure in
-[Rebuild from scratch](docs/rebuild-from-scratch.md).
-
-There is also a **two-pass requirement**: the first run against a bare host fails at
-the nftables interface check, because that check reads facts gathered before the
-WireGuard role created the interface. The second run succeeds. Both are documented
-in the rebuild guide with the reasoning.
+No passwordless sudo, no second run, no temporary firewall opening.
 
 ---
 
-## Prerequisites
+## Secrets
 
-**On the CONTROL NODE:**
+| File | Holds |
+|---|---|
+| `group_vars/webserver/vault.yml` | `ddns_api_token` |
+| `roles/caddy/files/origin.key.vault` | Origin CA private key, vault-encrypted as a whole file |
+| `roles/caddy/files/origin.pem` | Origin CA certificate. Public, not encrypted |
 
-- Linux with Ansible installed (WSL2 is fine)
-- The repo on a native Linux filesystem, **not** `/mnt/c` — DrvFs cannot represent
-  Unix permissions, so Ansible refuses to load a world-writable `ansible.cfg` and
-  vault files cannot be protected
-- SSH private key at `~/.ssh/id_ed25519`, mode `0600`
-- An `~/.ssh/config` entry, since the inventory carries connection details but
-  `scp` and manual `ssh` do not read it:
+New setup from the example: `cp group_vars/webserver/vault.yml.example
+group_vars/webserver/vault.yml`, fill it in, `ansible-vault encrypt` it.
 
-```
-Host WebServer jg-rpi-webserver
-    HostName 192.168.54.180
-    Port 2222
-    User justin
-```
-
-**On the WORKSTATION:** the WireGuard tunnel must be **up**. The target is
-unreachable without it, from either machine.
+**Before every push:**
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
+head -1 group_vars/webserver/vault.yml roles/caddy/files/origin.key.vault
 ```
 
----
-
-## Setup
-
-```bash
-cp group_vars/webserver/vault.yml.example group_vars/webserver/vault.yml
-# fill in the real Cloudflare API token and WireGuard private key
-ansible-vault encrypt group_vars/webserver/vault.yml
-```
-
-Verify before every push:
-
-```bash
-head -1 group_vars/webserver/vault.yml    # must read $ANSIBLE_VAULT;1.1;AES256
-```
-
-The vault holds exactly two secrets: `wg_private_key` and `ddns_api_token`.
-
----
-
-## Running
-
-Always dry-run first:
-
-```bash
-ansible-playbook -i inventory site.yml --check --diff --ask-vault-pass
-```
-
-Then apply:
-
-```bash
-ansible-playbook -i inventory site.yml --ask-vault-pass
-```
-
-A single role:
-
-```bash
-ansible-playbook -i inventory site.yml --tags caddy --ask-vault-pass
-```
-
-Tags available: `base`, `ssh`, `wireguard`, `nftables`/`firewall`, `caddy`/`web`,
-`fail2ban`/`security`, `ddns`/`dns`, `monitoring`.
-
-A converged host produces `changed=0`. Anything reporting changed on a host you have
-not touched is drift worth understanding before you re-apply over it.
-
----
-
-## Lockout risk — read before running the `nftables` role
-
-**This host has no management path except WireGuard.** The DMZ VLAN blocks the
-trusted LAN in both directions; SSH on 2222 is not forwarded from the internet. It
-sits in a basement with no monitor attached.
-
-Three things guard against locking yourself out:
-
-1. **Role order.** `wireguard` runs before `nftables` in `site.yml`, so the interface
-   the SSH rule references exists before the rule is written.
-2. **A pre-flight assertion.** The `nftables` role refuses to run if `wg0` is absent.
-3. **Template validation.** `nft -c -f` checks the ruleset syntactically before it is
-   ever written to disk.
-
-None of that protects against a *semantically* valid ruleset that locks you out, and
-none of it protects against the firewall and sshd disagreeing about which port is in
-use. When changing firewall or SSH templates, arm a dead-man switch on the host first
-— procedure in [Making changes](docs/making-changes.md).
-
-The WireGuard handler uses `wg syncconf` rather than `wg-quick down/up` for the same
-reason: tearing down the interface would drop the connection Ansible is running over.
+Both must read `$ANSIBLE_VAULT;1.1;AES256`.
 
 ---
 
 ## Design notes
 
-**SSH drop-in precedence.** `/etc/ssh/sshd_config` has
-`Include /etc/ssh/sshd_config.d/*.conf` near the top, and sshd takes the **first**
-value obtained for most keywords, not the last. Drop-ins are read in lexical order,
-so `00-hardening.conf` wins over cloud-init's `50-cloud-init.conf`, and anything
-written further down the main config is dead text. The predecessor host ran with
-`PasswordAuthentication yes` for months because of exactly this while its
-documentation claimed key-only.
+**SSH drop-in precedence.** sshd keeps the first value it reads, and `sshd_config.d/*.conf`
+is included near the top in lexical order. `00-hardening.conf` therefore beats cloud-init's
+`50-`. The role asserts the effective config with `sshd -T`, because the predecessor host ran
+with password auth enabled for months while its file said key-only.
 
-The `ssh` role therefore asserts against `sshd -T` rather than trusting the file it
-just wrote. Note the limit of that: `sshd -T` reports parsed configuration, meaning
-what sshd *would* do on next start. The only test of what the running daemon is
-actually doing is the listening socket, and the only test of behaviour is attempting
-a password login and being refused. Both are in
-[Routine checks](docs/routine-checks.md).
+**Console break-glass (R13).** In August 2026 the Pi had one way in, SSH over a tunnel it
+terminated itself, and no console password. Moving it removed every path in. The password
+now exists, lives in the password manager, and `roles/base` refuses to run without it.
 
-**fail2ban's ban backend.** This host has no `iptables` binary. A jail left on
-`iptables-multiport` reports as healthy and bans nothing. `banaction` is set to
-`nftables[type=multiport]` explicitly.
+**Address owned by NetworkManager, not netplan.** A netplan file written under
+NetworkManager's netplan backend gets absorbed and recreated every run (DR-003 11.7).
 
-**`trusted_proxies` is security-critical.** Without it, every access-log entry records
-a Cloudflare edge IP instead of the visitor, and the `caddy-404` jail bans Cloudflare.
-Correctly scoped, forged `CF-Connecting-IP` headers from untrusted sources are ignored.
+**fail2ban's ban action is nftables.** The Pi has no `iptables`. An iptables action reports
+healthy and bans nothing. `caddy-404` still cannot block visitors behind Cloudflare; that
+moves to Cloudflare.
 
-**`caddy validate` runs as root** and sets up the log writer as a side effect,
-creating `access.log` owned `root:root`. Caddy then starts as the `caddy` user, cannot
-open its own log, and dies with a misleading permission error. The role repairs
-ownership immediately after the validate step. Never run `sudo caddy validate` or
-`sudo caddy run` by hand.
+**`trusted_proxies` is security-critical.** Without it every log line records a Cloudflare
+edge, and the 404 jail targets Cloudflare.
 
-**`/var/swap` is not a stale swapfile.** It is zram's writeback backing store, managed
-by `rpi-setup-loop@var-swap.service`. Deleting it breaks the zram+file swap tier. The
-playbook creates `/swapfile` separately, at a priority below zram's 100.
+**The nftables template replaces only `inet filter`**, never `flush ruleset`, so fail2ban's
+own table and its bans survive a reload.
 
-**The Cloudsmith signing key is checksum-pinned.** `get_url` otherwise trusts whatever
-that URL serves on any given run. Pinning means a substituted key fails the play
-rather than silently installing a new apt trust anchor. When Cloudsmith legitimately
-rotates the key the play breaks and you update the hash by hand — for a repository
-signing key, failing loudly is correct.
+**`/var/swap` is not a stale swapfile.** It is zram's writeback store. Deleting it breaks
+swap.
 
----
+**The Cloudsmith signing key is checksum-pinned.** A substituted key fails the play instead
+of becoming a new apt trust anchor.
 
-## Routed access through the tunnel
-
-This host terminates the WireGuard tunnel and also routes **one** narrowly-scoped flow
-to another DMZ host, rather than standing up a second VPN endpoint or forwarding
-another WAN port. Peers already carry `AllowedIPs` covering the whole DMZ `/24`, so no
-peer config changes were needed.
-
-Driven entirely by `nft_forward_allow` in `group_vars`. An empty list means no routing
-and sets `net.ipv4.ip_forward` back to `0` — the sysctl and the firewall rules read the
-same variable so they cannot disagree.
-
-Three deliberate choices:
-
-- **The forward rules live in the existing base chain.** nftables traverses *every*
-  base chain on a hook, so a second chain would still be filtered by the original's
-  `policy drop` — presenting as intermittent failure rather than an obvious error.
-- **Tunnel → trusted LAN is explicitly dropped** before any accept can match. The
-  router's VLAN already blocks it; stating it here makes the intent auditable on the
-  one host that could otherwise become a pivot.
-- **No masquerade or SNAT.** The destination sees the real `10.10.10.x` source, so its
-  logs attribute connections to a specific peer instead of blaming this host for
-  everything.
-
-The template replaces only `inet filter` rather than issuing `flush ruleset`, because
-fail2ban maintains its own `inet f2b-table` and a full flush would silently delete
-active bans while fail2ban continued to report them as enforced.
+**Line endings.** `.gitattributes` forces LF. A Windows checkout with CRLF once nearly
+shipped `#!/bin/bash\r` to the Pi.
 
 ---
 
 ## Accepted tradeoffs
 
-Deliberate decisions, not oversights. Each is revisited when the thing that justified
-it changes.
-
-- **No rate limiting or WAF.** Static HTML with no forms and no server-side logic, so
-  the attack surface is small. Revisit if the site gains dynamic content.
-- **Caddy is pinned out of unattended-upgrades**, because only Debian security origins
-  are allowed. Caddy updates are therefore a manual, scheduled responsibility rather
-  than an automatic one.
-- **No external uptime monitoring.** The site going down is an inconvenience, not an
-  incident.
-- **WireGuard is the sole management path with no LAN-side fallback.** This trades a
-  convenient fallback for taking a listening SSH port off the segment entirely. The
-  cost is real and has been paid: see [Recovery](docs/recovery.md).
-- **`base` reports leftover Wi-Fi connection profiles rather than deleting them**,
-  since removing the profile you are connected through is not something a playbook
-  should do unprompted.
+Listed with their reasons in [Runbook](docs/runbook.md) section 16.
