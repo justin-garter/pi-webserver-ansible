@@ -148,6 +148,22 @@ curl.exe -s -o NUL -w "%{http_code}`n" -X POST https://justingarter.com/
 **Check:** `403`, `200`, `403`. Then compare the rule in Cloudflare (Security > Security rules >
 `Block scanner paths`) with `cloudflare/waf-block-scanners.txt`. They must match.
 
+**404s per hour, last 48 hours.** Run on the backup Pi (`ssh BackupPi`). GoAccess has no
+404-over-time panel, so this reads the logs through the same read-only export key:
+
+```bash
+pull() { sudo -u webreport ssh -T -i /var/lib/web-report/.ssh/id_ed25519 -o UserKnownHostsFile=/etc/web-report/known_hosts logpull@10.10.40.10; }
+pull | jq -r 'select(.status==404 and .ts > (now - 172800))
+  | (.ts|floor|strflocaltime("%m-%d %H:00")) + "  "
+  + (if (.request.uri|test("^/(robots\\.txt|sitemap\\.xml)")) then "crawler" else "scanner" end)' \
+  | sort | uniq -c | awk '{printf "%s %s  %-8s %s\n",$2,$3,$4,$1}'
+```
+
+**Check:** `scanner` lines are absent or single digits. A burst of scanner 404s means a path
+the rule misses: list them with
+`pull | jq -r 'select(.status==404) | .request.uri' | sort | uniq -c | sort -rn | head -20`,
+add the pattern to `cloudflare/waf-block-scanners.txt`, then to Cloudflare.
+
 ---
 
 ## Is the log export readable?
