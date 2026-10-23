@@ -26,8 +26,9 @@ Every `ansible-playbook` run prompts for the become password, then the vault pas
 ansible-playbook site.yml --check --diff
 ```
 
-Scope to one role with `--tags`: `base`, `ssh`, `nftables` or `firewall`, `caddy` or `web`,
-`fail2ban` or `security`, `ddns` or `dns`, `monitoring`.
+Scope to one role with `--tags`: `base`, `ssh`, `nftables` or `firewall`, `log_export`,
+`caddy` or `web` (both include `log_export`), `fail2ban` or `security`, `ddns` or `dns`,
+`monitoring`.
 
 Check mode cannot run handlers and cannot see what earlier tasks would have created. A clean
 dry run is good evidence, not proof.

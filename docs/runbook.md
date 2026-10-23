@@ -1,8 +1,9 @@
 # JG-RPi-WebServer: Technical Runbook (v3)
 
-**Last updated:** 2026-09-30
+**Last updated:** 2026-10-23
 **Supersedes:** v2 (August 2026, parents' network, NVMe, WireGuard). v2 is in git history.
-**Design records:** DR-002 (gateway policy) and DR-003 (this playbook's rework) in the
+**Design records:** DR-002 (gateway policy), DR-003 (this playbook's rework) and DR-005
+(traffic report, edge blocking) in the
 `infrastructure-redesign` repo.
 
 Lookup reference: exact configuration and why. Procedures live in the other `docs/` pages.
@@ -205,8 +206,10 @@ WSL connects by address.
 | URLs | `try_files {path} {path}.html`, so extensionless links work |
 | Listeners | 443 only. `auto_https disable_redirects`, so no :80 listener |
 | Protocols | `h1 h2` |
-| Access log | JSON, `/var/log/caddy/access.log` |
+| Access log | JSON, `/var/log/caddy/access.log`, `caddy:caddylog 0640`. Directory `caddy:caddylog 2750` (setgid), so rolled files keep the group. Caddy rolls at 100 MiB, keeps 10 files or 90 days |
+| Log export | `logpull` account, forced command `zcat -f /var/log/caddy/access*`, key from the backup Pi only (`from=10.10.10.20`). Feeds the GoAccess report on the backup Pi (DR-005) |
 | Memory | `GOMEMLIMIT=256MiB`, `MemoryMax=384M` (systemd override) |
+| systemd override | No `LogsDirectory=`. systemd re-owns that directory to `caddy:caddy` on every start, which stripped the `caddylog` group and locked out the log export (found 2026-10-23). The role creates the directory; the override only adds `ReadWritePaths` |
 | Headers | HSTS (1 year, includeSubDomains, preload), nosniff, `X-Frame-Options: DENY`, `strict-origin-when-cross-origin`, Permissions-Policy, `-Server` |
 
 **TLS: Cloudflare Origin CA** (DR-003 11.8).
@@ -234,7 +237,7 @@ ignored. Static IPv4 list in `vars.yml`; IPv6 omitted because there is no AAAA r
 log as `root:root`, and Caddy, running as `caddy`, then cannot open it. The role repairs
 ownership after its own validate step.
 
-**No rate limiting or WAF at the origin.** Static HTML, no forms. Blocking belongs at
+**No rate limiting or WAF at the origin.** Static HTML, no forms. Blocking happens at
 Cloudflare (Section 10).
 
 ---
@@ -247,14 +250,23 @@ Cloudflare (Section 10).
 | Ban action | `nftables[type=multiport]`. The Pi has no `iptables`; an iptables action looks healthy and bans nothing |
 | ignoreip | `127.0.0.1/8 ::1 10.10.10.0/24 10.10.20.10/32` |
 | `sshd` jail | port 22, systemd journal |
-| `caddy-404` jail | access log, 10 hits in 120 s, ban 3600 s. Filter matches `client_ip` with status 404 |
+| `caddy-404` jail | **Retired 2026-10-23 (DR-005).** The role deletes its filter and asserts it is not loaded |
 
 `f2b-table` appears only after the first ban. Its absence after a reboot is normal.
 
-**`caddy-404` detects but cannot block.** It bans the visitor address, but every packet the
-Pi receives comes from a Cloudflare address, so the nftables ban never matches. Effective
-blocking moves to Cloudflare (WAF rule or IP list through the API) with the web traffic
-dashboard.
+**Why `caddy-404` went.** It banned the visitor address, but every packet the Pi receives
+comes from a Cloudflare address, so the nftables ban never matched. It detected and never
+blocked.
+
+**Blocking is at Cloudflare.** One WAF custom rule, `Block scanner paths`, created by hand
+2026-10-23. Expression: `cloudflare/waf-block-scanners.txt` in this repo, which is the
+intent; the dashboard copy must match it. It blocks any method other than GET and HEAD,
+server-side and config extensions (`.php`, `.env`, `.json`, `.yml` and others), WordPress
+and probe paths, and any path segment starting with a dot except `/.well-known/`. New site
+content with one of those extensions needs the rule changed first.
+
+Verified 2026-10-23: `/wp-login.php` 403, `/.env` 403, `POST /` 403, `/projects` 200,
+`HEAD /` 200.
 
 ---
 
@@ -331,6 +343,7 @@ must print `$ANSIBLE_VAULT;1.1;AES256` twice.
 |---|---|
 | 2026-08 | Built on the parents' network: VLAN 54, NVMe, WireGuard-only management. Rebuilt from the playbook on 2026-08-16 |
 | 2026-09-22 | Booted at the new place, no console login possible (DR-003 Section 2, R13). Card wiped |
+| 2026-10-23 | DR-005: log export for the GoAccess report on the backup Pi, Caddy log group `caddylog`, `LogsDirectory=` removed from the override, `caddy-404` retired, Cloudflare WAF rule live |
 | 2026-09-29 | Rebuilt on VLAN 40 behind OPNsense from a 64 GB microSD. First run found three defects (fail2ban handlers not flushed before the jail assert, netplan file fighting NetworkManager, missing vault prompt), all fixed in the playbook. Console login verified. Origin CA PEM files collapsed to one line on paste, re-wrapped and match-checked. Reboot, then a full run at `changed=0 failed=0`. Site live |
 
 ---
@@ -339,7 +352,7 @@ must print `$ANSIBLE_VAULT;1.1;AES256` twice.
 
 **Accepted:**
 
-- No rate limiting or WAF at the origin. Static site.
+- No rate limiting or WAF at the origin. Static site; the WAF rule is at Cloudflare.
 - No external uptime monitoring. Downtime is an inconvenience, not an incident.
 - Caddy updates are manual.
 - `trusted_proxies` is a static list.
@@ -349,7 +362,8 @@ must print `$ANSIBLE_VAULT;1.1;AES256` twice.
 
 **Open:**
 
-- `caddy-404` blocking at Cloudflare, with the web traffic dashboard (Section 10).
+- 447 of the logged 404s are `/robots.txt` and `/sitemap.xml` from search crawlers. Adding
+  a `robots.txt` to the site would clear most of them.
 - Card overprovisioning (DR-003 7: image into about 16 GB, leave the rest unallocated) was
   not done. The image auto-expanded. Revisit at the next rebuild.
 - `wrk` stays in `verification_packages`. The August load-test figures stay on the site,
@@ -366,9 +380,10 @@ Run on the Pi.
 | Task | Command |
 |---|---|
 | Service overview | `systemctl status caddy fail2ban nftables cloudflare-ddns.timer pi-thermal.timer` |
+| Traffic report | `http://10.10.10.20:8080` from the desktop, rebuilt hourly (DR-005) |
 | Live traffic | `sudo tail -f /var/log/caddy/access.log \| jq .` |
 | Recent visitor IPs | `sudo tail -20 /var/log/caddy/access.log \| jq -r .request.client_ip` |
-| Ban lists | `sudo fail2ban-client status caddy-404` and `sshd` |
+| Ban list | `sudo fail2ban-client status sshd` |
 | Bans in the kernel | `sudo nft list table inet f2b-table` |
 | Manual DDNS run | `sudo systemctl start cloudflare-ddns.service` |
 | Public IP | `curl -s -4 https://ifconfig.me` |

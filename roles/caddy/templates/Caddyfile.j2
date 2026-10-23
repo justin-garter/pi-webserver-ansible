@@ -12,7 +12,7 @@
 
         # Security-critical, not cosmetic. Without this every access-log entry
         # records a Cloudflare edge IP instead of the visitor, and the
-        # caddy-404 fail2ban jail bans Cloudflare. Correctly scoped, forged
+        # traffic report (DR-005) shows Cloudflare as every visitor. Correctly scoped, forged
         # CF-Connecting-IP headers from untrusted sources are ignored.
         trusted_proxies static {{ caddy_trusted_proxies | join(' ') }}
     }
@@ -37,9 +37,13 @@
         -Server
     }
 
-    # Access logging is off by default; the caddy-404 jail depends on it.
+    # Access logging is off by default; the traffic report depends on it
+    # (DR-005). mode 0640 plus the setgid log directory lets the log export
+    # account read current and rolled files. Caddy's default is 0600.
     log {
-        output file {{ caddy_log_path }}
+        output file {{ caddy_log_path }} {
+            mode 0640
+        }
         format json
     }
 }

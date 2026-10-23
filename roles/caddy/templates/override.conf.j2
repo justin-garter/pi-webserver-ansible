@@ -1,7 +1,9 @@
 # Managed by Ansible — roles/caddy
 [Service]
-LogsDirectory={{ caddy_log_path | dirname | basename }}
-LogsDirectoryMode=0750
+# No LogsDirectory= (DR-005). systemd re-owns that directory to User:Group
+# on every start, recursively, which stripped the caddylog group and the
+# setgid bit and locked the traffic report out after each restart.
+# roles/caddy creates the directory; this only makes it writable.
 ReadWritePaths={{ caddy_log_path | dirname }}
 
 # Soft GC target. Caddy otherwise infers ~890MB from total RAM, which is most

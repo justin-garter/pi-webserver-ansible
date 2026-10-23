@@ -14,14 +14,6 @@ enabled  = true
 port     = {{ ssh_port }}
 backend  = systemd
 
-# Catches automated scanning — bots probing /wp-admin and friends.
-# Worthless unless Caddy's trusted_proxies is correct: if client_ip logs a
-# Cloudflare edge address, this bans Cloudflare.
-[caddy-404]
-enabled  = true
-port     = http,https
-filter   = caddy-404
-logpath  = {{ caddy_log_path }}
-maxretry = {{ f2b_caddy404_maxretry }}
-findtime = {{ f2b_caddy404_findtime }}
-bantime  = {{ f2b_caddy404_bantime }}
+# No caddy-404 jail (DR-005). It could detect but never block: behind
+# Cloudflare the source of every packet is a Cloudflare address. Scanner paths
+# are blocked at Cloudflare's edge instead (cloudflare/waf-block-scanners.txt).

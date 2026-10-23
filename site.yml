@@ -20,6 +20,8 @@
       tags: [ssh]
     - role: nftables
       tags: [nftables, firewall]
+    - role: log_export
+      tags: [log_export, caddy, web]
     - role: caddy
       tags: [caddy, web]
     - role: fail2ban

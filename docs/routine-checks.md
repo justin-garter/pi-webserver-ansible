@@ -129,11 +129,35 @@ ban, so its absence on a freshly booted Pi with no bans is normal. The ban appea
 kernel ruleset is the proof. `fail2ban-client` reporting a ban is not; that is what a wrong
 `banaction` looks like.
 
-**Check:** jails `sshd` and `caddy-404` listed; the test address appears in `f2b-table`.
+**Check:** only the `sshd` jail is listed; the test address appears in `f2b-table`.
 
-**Known limitation:** `caddy-404` detects but cannot block. It bans the visitor address from
-`CF-Connecting-IP`, but every packet reaching the Pi comes from a Cloudflare address, so the
-ban never matches. Blocking moves to Cloudflare with the traffic dashboard (DR-003 11.8).
+Scanner blocking is not fail2ban's job. It is the Cloudflare WAF rule (next section).
+
+---
+
+## Is the Cloudflare WAF rule blocking?
+
+Run on: WORKSTATION, PowerShell.
+
+```powershell
+curl.exe -s -o NUL -w "%{http_code}`n" https://justingarter.com/wp-login.php
+curl.exe -s -o NUL -w "%{http_code}`n" https://justingarter.com/projects
+curl.exe -s -o NUL -w "%{http_code}`n" -X POST https://justingarter.com/
+```
+
+**Check:** `403`, `200`, `403`. Then compare the rule in Cloudflare (Security > Security rules >
+`Block scanner paths`) with `cloudflare/waf-block-scanners.txt`. They must match.
+
+---
+
+## Is the log export readable?
+
+```bash
+$P 'sudo stat -c "%a %U:%G %n" /var/log/caddy /var/log/caddy/access.log; systemctl show caddy -p LogsDirectory'
+```
+
+**Check:** `2750 caddy:caddylog`, `640 caddy:caddylog`, and `LogsDirectory=` empty. Kuma's
+`web-report` monitor being Up proves the same from the other end.
 
 ---
 

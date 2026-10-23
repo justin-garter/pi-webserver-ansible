@@ -1,0 +1,25 @@
+(not http.request.method in {"GET" "HEAD"})
+or ends_with(lower(http.request.uri.path), ".php")
+or ends_with(lower(http.request.uri.path), ".asp")
+or ends_with(lower(http.request.uri.path), ".aspx")
+or ends_with(lower(http.request.uri.path), ".jsp")
+or ends_with(lower(http.request.uri.path), ".cgi")
+or ends_with(lower(http.request.uri.path), ".env")
+or ends_with(lower(http.request.uri.path), ".sql")
+or ends_with(lower(http.request.uri.path), ".bak")
+or ends_with(lower(http.request.uri.path), ".zip")
+or ends_with(lower(http.request.uri.path), ".json")
+or ends_with(lower(http.request.uri.path), ".yml")
+or ends_with(lower(http.request.uri.path), ".yaml")
+or ends_with(lower(http.request.uri.path), ".ini")
+or ends_with(lower(http.request.uri.path), ".log")
+or lower(http.request.uri.path) contains "/wp-"
+or lower(http.request.uri.path) contains "wordpress"
+or lower(http.request.uri.path) contains "xmlrpc"
+or lower(http.request.uri.path) contains "cgi-bin"
+or lower(http.request.uri.path) contains "phpmyadmin"
+or lower(http.request.uri.path) contains "phpinfo"
+or lower(http.request.uri.path) contains "/_profiler"
+or lower(http.request.uri.path) contains "/vendor/"
+or lower(http.request.uri.path) contains "/actuator"
+or (http.request.uri.path contains "/." and not starts_with(http.request.uri.path, "/.well-known/"))

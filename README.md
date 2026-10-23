@@ -91,8 +91,8 @@ Every run prompts twice: `BECOME password` (the `justin` password; sudo keeps it
 DR-003 11.6) then `Vault password`. Both are in the password manager. Runs are manual and
 never scheduled.
 
-Tags: `base`, `ssh`, `nftables`/`firewall`, `caddy`/`web`, `fail2ban`/`security`,
-`ddns`/`dns`, `monitoring`.
+Tags: `base`, `ssh`, `nftables`/`firewall`, `log_export`, `caddy`/`web` (includes
+`log_export`), `fail2ban`/`security`, `ddns`/`dns`, `monitoring`.
 
 A converged host reports `changed=0`. Anything else on a host you have not touched is drift
 or a role defect.
@@ -106,8 +106,9 @@ or a role defect.
 | `base` | Refuses to run without a console password (R13). Asserts the host is on `10.10.40.10`, owns it with one NetworkManager profile `dmz`. Hostname, timezone, packages, cloud-init off, seed files deleted, radios off in firmware, root `noatime,commit=600`, journal in RAM, 512 MB swapfile below zram, unattended-upgrades |
 | `ssh` | Key-only on 22 via a `00-` drop-in, asserted against `sshd -T` |
 | `nftables` | Default-deny inbound. 443 from any (OPNsense limits it to Cloudflare), SSH from `10.10.10.0/24` and `10.10.20.10` only, no forwarding |
-| `caddy` | Caddy from Cloudsmith, Cloudflare Origin CA certificate, 443 only, extensionless URLs, `trusted_proxies`, security headers, JSON access log, memory limits |
-| `fail2ban` | nftables ban action, `sshd` and `caddy-404` jails |
+| `log_export` | `logpull` account with one forced-command key from the backup Pi: streams the Caddy access logs, nothing else (DR-005). Refuses to run without `logpull_pubkey` |
+| `caddy` | Caddy from Cloudsmith, Cloudflare Origin CA certificate, 443 only, extensionless URLs, `trusted_proxies`, security headers, JSON access log readable by group `caddylog`, memory limits |
+| `fail2ban` | nftables ban action, `sshd` jail. `caddy-404` retired (DR-005) |
 | `ddns` | Cloudflare DDNS for the apex every 5 minutes, preserving each record's proxied flag |
 | `monitoring` | Hourly thermal and throttle log |
 
@@ -167,11 +168,18 @@ now exists, lives in the password manager, and `roles/base` refuses to run witho
 NetworkManager's netplan backend gets absorbed and recreated every run (DR-003 11.7).
 
 **fail2ban's ban action is nftables.** The Pi has no `iptables`. An iptables action reports
-healthy and bans nothing. `caddy-404` still cannot block visitors behind Cloudflare; that
-moves to Cloudflare.
+healthy and bans nothing. Scanner blocking is a Cloudflare WAF rule, not fail2ban:
+behind Cloudflare the origin only ever sees Cloudflare addresses
+(`cloudflare/waf-block-scanners.txt`, DR-005).
 
 **`trusted_proxies` is security-critical.** Without it every log line records a Cloudflare
-edge, and the 404 jail targets Cloudflare.
+edge, and the traffic report shows Cloudflare as every visitor.
+
+**Log export from the backup Pi (DR-005).** The backup Pi pulls the access logs hourly for its
+GoAccess report. `logpull_pubkey` in `vars.yml` is that Pi's key; rebuilding the backup Pi
+means pasting its new key there and re-running `--tags log_export`. Caddy's systemd override
+must not set `LogsDirectory=`: systemd would re-own the log directory on every start and lock
+the export out.
 
 **The nftables template replaces only `inet filter`**, never `flush ruleset`, so fail2ban's
 own table and its bans survive a reload.

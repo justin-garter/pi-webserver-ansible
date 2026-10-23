@@ -89,9 +89,18 @@ caddy_security_headers:
 f2b_banaction: "nftables[type=multiport]"
 f2b_banaction_allports: "nftables[type=allports]"
 f2b_ignoreip: "127.0.0.1/8 ::1 {{ ssh_admin_sources | join(' ') }}"
-f2b_caddy404_maxretry: 10
-f2b_caddy404_findtime: 120
-f2b_caddy404_bantime: 3600
+# No caddy-404 jail (DR-005). Behind Cloudflare every packet comes from a
+# Cloudflare address, so a ban on the visitor IP never matched. Scanner paths
+# are blocked at Cloudflare instead: cloudflare/waf-block-scanners.txt.
+
+# ── Log export (DR-005) ──────────────────────────────────────────────────────
+# The backup Pi pulls Caddy's access log hourly over SSH for its GoAccess
+# report. Read-only forced command, accepted from the backup Pi only.
+caddy_log_group: caddylog
+logpull_user: logpull
+logpull_source: 10.10.10.20
+# Public key from the backup Pi: /var/lib/web-report/.ssh/id_ed25519.pub
+logpull_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJP95116MB1PAfMMU9dZKtACziXWjV2pzmqv0kKGQstW webreport@JG-RPi-Backup"
 
 # ── DDNS ─────────────────────────────────────────────────────────────────────
 ddns_zone_id: 63de65311b9a3ed27665b03d0dd88ed8

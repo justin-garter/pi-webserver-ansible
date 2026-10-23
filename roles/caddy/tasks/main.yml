@@ -50,13 +50,15 @@
     state: present
     update_cache: true
 
+# setgid: every file Caddy creates here, rolled logs included, inherits the
+# log reader group (DR-005). The group can read, never write.
 - name: Ensure log directory
   ansible.builtin.file:
     path: "{{ caddy_log_path | dirname }}"
     state: directory
     owner: caddy
-    group: caddy
-    mode: "0750"
+    group: "{{ caddy_log_group }}"
+    mode: "2750"
 
 # Owned by the deploy user, not caddy: content is pushed with rsync over SSH
 # and Caddy only ever reads it. Chowning to caddy would break deploys.
@@ -117,10 +119,27 @@
     path: "{{ caddy_log_path }}"
     state: touch
     owner: caddy
-    group: caddy
+    group: "{{ caddy_log_group }}"
     mode: "0640"
     modification_time: preserve
     access_time: preserve
+
+# Rolled files written before DR-005 still carry the caddy group.
+- name: Find rolled access logs
+  ansible.builtin.find:
+    paths: "{{ caddy_log_path | dirname }}"
+    patterns: "access-*.log*"
+  register: caddy_rolled_logs
+
+- name: Give rolled access logs to the log reader group
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: caddy
+    group: "{{ caddy_log_group }}"
+    mode: "0640"
+  loop: "{{ caddy_rolled_logs.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
 
 - name: Create systemd override directory
   ansible.builtin.file:

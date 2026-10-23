@@ -1,0 +1,66 @@
+---
+# Read-only export of Caddy's access log to the traffic report on the backup
+# Pi (DR-005). The backup Pi (MGMT) pulls; this DMZ host never initiates to
+# MGMT. One key, one forced command, nothing else: no shell, no pty, no
+# forwarding, and only from the backup Pi's address.
+
+- name: Refuse to run without the report puller's public key
+  ansible.builtin.assert:
+    that:
+      - logpull_pubkey is defined
+      - logpull_pubkey is match('^ssh-ed25519 ')
+    fail_msg: >-
+      logpull_pubkey is empty. Run the lab playbook with --tags web_report,
+      then copy /var/lib/web-report/.ssh/id_ed25519.pub from the backup Pi
+      into group_vars/webserver/vars.yml (DR-005).
+
+# Owns read access to the Caddy logs. Caddy stays the owner; this group only
+# reads. A separate group, because the caddy group can also read the origin
+# TLS key in /etc/caddy/tls.
+- name: Create the log reader group
+  ansible.builtin.group:
+    name: "{{ caddy_log_group }}"
+    system: true
+
+# A login shell is required: sshd runs the forced command through it.
+# Password "*" means no password can ever match, without the "!" lock that
+# can make sshd refuse key logins too.
+- name: Create the log export account
+  ansible.builtin.user:
+    name: "{{ logpull_user }}"
+    system: true
+    group: "{{ caddy_log_group }}"
+    shell: /bin/sh
+    home: "/var/lib/{{ logpull_user }}"
+    create_home: true
+    password: "*"
+
+- name: Lock down the export account's home
+  ansible.builtin.file:
+    path: "/var/lib/{{ logpull_user }}"
+    state: directory
+    owner: "{{ logpull_user }}"
+    group: "{{ caddy_log_group }}"
+    mode: "0750"
+
+# root owns .ssh and authorized_keys, so the account cannot change its own
+# key or options even if the forced command were somehow escaped.
+- name: Create the export account's .ssh
+  ansible.builtin.file:
+    path: "/var/lib/{{ logpull_user }}/.ssh"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The glob always matches access.log, plus any rolled access-*.log.gz.
+# zcat -f passes plain files through unchanged.
+- name: Deploy the forced-command key
+  ansible.builtin.copy:
+    dest: "/var/lib/{{ logpull_user }}/.ssh/authorized_keys"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible: roles/log_export (DR-005)
+      restrict,from="{{ logpull_source }}",command="/usr/bin/zcat -f {{ caddy_log_path | dirname }}/access*" {{ logpull_pubkey }}
