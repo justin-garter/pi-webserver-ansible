@@ -104,13 +104,15 @@ logpull_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJP95116MB1PAfMMU9dZKtACziX
 
 # ── DDNS ─────────────────────────────────────────────────────────────────────
 ddns_zone_id: 63de65311b9a3ed27665b03d0dd88ed8
-# Apex only for now. The apex and www are proxied, so the home IP is not
-# published. origin (DNS-only, for Minecraft) is deliberately NOT created until
-# Minecraft exists (DR-003 11.5): a DNS-only record publishes the home IP and
-# lets anyone skip Cloudflare. Records must already exist in Cloudflare; the
-# updater edits, it never creates.
+# The apex is proxied, so its record never reveals the home IP. origin is
+# DNS-only, for Minecraft (DR-007): it does publish the home IP (R2), which is
+# why OPNsense admits 443 from Cloudflare's ranges only. minecraft (CNAME) and
+# the _minecraft._tcp SRV point at origin, so this updater only ever has to
+# change origin. Records must already exist in Cloudflare; the updater edits,
+# it never creates.
 ddns_records:
   - justingarter.com
+  - origin.justingarter.com
 ddns_interval: 5min
 # ddns_api_token lives in vault.yml
 
