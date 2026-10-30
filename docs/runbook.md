@@ -4,7 +4,7 @@
 **Supersedes:** v2 (August 2026, parents' network, NVMe, WireGuard). v2 is in git history.
 **Design records:** DR-002 (gateway policy), DR-003 (this playbook's rework) and DR-005
 (traffic report, edge blocking) in the
-`infrastructure-redesign` repo.
+`home-lab` repo (private).
 
 Lookup reference: exact configuration and why. Procedures live in the other `docs/` pages.
 
